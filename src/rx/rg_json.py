@@ -20,7 +20,8 @@ Example usage:
 
 import json
 import logging
-from typing import List, Optional, Union, Literal
+from typing import Literal, Union
+
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class RgPath(BaseModel):
     Can be a text path or null for stdin/binary data.
     """
 
-    text: Optional[str] = None
+    text: str | None = None
 
 
 # ============================================================================
@@ -112,9 +113,9 @@ class RgMatchData(BaseModel):
     lines: RgText
     line_number: int
     absolute_offset: int
-    submatches: List[RgSubmatch]
+    submatches: list[RgSubmatch]
 
-    def get_match_absolute_offsets(self) -> List[int]:
+    def get_match_absolute_offsets(self) -> list[int]:
         """Calculate absolute byte offsets for each submatch in the file
 
         Returns:
@@ -141,7 +142,7 @@ class RgContextData(BaseModel):
     lines: RgText
     line_number: int
     absolute_offset: int
-    submatches: List[RgSubmatch] = Field(default_factory=list)
+    submatches: list[RgSubmatch] = Field(default_factory=list)
 
 
 class RgStats(BaseModel):
@@ -164,7 +165,7 @@ class RgEndData(BaseModel):
     """
 
     path: RgPath
-    binary_offset: Optional[int] = None
+    binary_offset: int | None = None
     stats: RgStats
 
 
@@ -227,7 +228,7 @@ RgEvent = Union[RgBeginEvent, RgMatchEvent, RgContextEvent, RgEndEvent, RgSummar
 # ============================================================================
 
 
-def parse_rg_json_event(json_line: str | bytes) -> Optional[RgEvent]:
+def parse_rg_json_event(json_line: str | bytes) -> RgEvent | None:
     """Parse a single line of ripgrep JSON output into a typed event
 
     Args:
@@ -271,7 +272,7 @@ def parse_rg_json_event(json_line: str | bytes) -> Optional[RgEvent]:
         return None
 
 
-def parse_rg_json_stream(lines: List[str | bytes]) -> List[RgEvent]:
+def parse_rg_json_stream(lines: list[str | bytes]) -> list[RgEvent]:
     """Parse multiple lines of ripgrep JSON output
 
     Args:

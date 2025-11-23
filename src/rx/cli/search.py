@@ -5,7 +5,6 @@ import os
 import re
 import sys
 from time import time
-from typing import Dict, Optional, Tuple
 
 import click
 
@@ -34,15 +33,15 @@ def format_context_header(file_val: str, offset_str: str, pattern_val: str, colo
 
 def find_match_for_context(
     response: TraceResponse, pattern_id: str, file_id: str, offset_int: int
-) -> Tuple[Optional[str], Optional[int]]:
+) -> tuple[str | None, int | None]:
     """Find the matched line and line number for a given context block."""
     for match in response.matches:
         if match.pattern == pattern_id and match.file == file_id and match.offset == offset_int:
-            return match.line_text, match.line_number
+            return match.line_text, match.relative_line_number
     return None, None
 
 
-def build_lines_dict(ctx_lines: list, matched_line: Optional[str], match_line_number: Optional[int]) -> Dict[int, str]:
+def build_lines_dict(ctx_lines: list, matched_line: str | None, match_line_number: int | None) -> dict[int, str]:
     """
     Build a dictionary of line numbers to line text from context lines.
 
@@ -58,7 +57,9 @@ def build_lines_dict(ctx_lines: list, matched_line: Optional[str], match_line_nu
 
     # Add context lines
     for ctx_line in ctx_lines:
-        line_num = ctx_line.line_number if isinstance(ctx_line, ContextLine) else ctx_line.get('line_number')
+        line_num = (
+            ctx_line.relative_line_number if isinstance(ctx_line, ContextLine) else ctx_line.get('relative_line_number')
+        )
         line_text = (
             ctx_line.line_text if isinstance(ctx_line, ContextLine) else ctx_line.get('line_text', str(ctx_line))
         )
@@ -98,7 +99,7 @@ def highlight_pattern_in_line(line_text: str, pattern_val: str, colorize: bool) 
 
 
 def display_context_block(
-    composite_key: str, response: TraceResponse, pattern_ids: Dict[str, str], file_ids: Dict[str, str], colorize: bool
+    composite_key: str, response: TraceResponse, pattern_ids: dict[str, str], file_ids: dict[str, str], colorize: bool
 ) -> None:
     """
     Display a single context block (header + context lines).
@@ -144,8 +145,8 @@ def display_context_block(
 
 def display_samples_output(
     response: TraceResponse,
-    pattern_ids: Dict[str, str],
-    file_ids: Dict[str, str],
+    pattern_ids: dict[str, str],
+    file_ids: dict[str, str],
     before_ctx: int,
     after_ctx: int,
     colorize: bool,
@@ -177,8 +178,8 @@ def display_samples_output(
 
 def handle_samples_output(
     response: TraceResponse,
-    pattern_ids: Dict[str, str],
-    file_ids: Dict[str, str],
+    pattern_ids: dict[str, str],
+    file_ids: dict[str, str],
     before_ctx: int,
     after_ctx: int,
     output_json: bool,
@@ -334,6 +335,7 @@ def search_command(
             scanned_files = result['scanned_files']
             skipped_files = result['skipped_files']
             context_lines_dict = result.get('context_lines')  # Optional context from ripgrep
+            file_chunks = result.get('file_chunks')  # Number of chunks per file
 
         except FileNotFoundError as e:
             click.echo(f"❌ Error: {e}", err=True)
@@ -346,9 +348,6 @@ def search_command(
             sys.exit(1)
 
         # Build response object
-        # For display, show all paths as comma-separated string if multiple
-        display_path = ", ".join(final_paths) if len(final_paths) > 1 else final_paths[0]
-
         # Convert context_lines to proper format if present
         converted_context = None
         if context_lines_dict:
@@ -358,16 +357,18 @@ def search_command(
                 converted_context[key] = ctx_lines
 
         response = TraceResponse(
-            path=display_path,
+            path=final_paths,  # Pass as list directly
             time=parsing_time,
             patterns=pattern_ids,
             files=file_ids,
             matches=[Match(**m) for m in matches],
             scanned_files=scanned_files,
             skipped_files=skipped_files,
+            file_chunks=file_chunks,
             context_lines=converted_context,
             before_context=before_ctx if samples else None,
             after_context=after_ctx if samples else None,
+            max_results=max_results,  # Include max_results in response
         )
 
         # Handle --samples flag

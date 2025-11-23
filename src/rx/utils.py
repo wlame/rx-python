@@ -1,7 +1,13 @@
 """Utility functions for RX"""
 
-import os
 import logging
+import os
+
+# Newline symbol configuration (module-level constants)
+_newline_env = os.getenv('NEWLINE_SYMBOL', '\\n')
+# Handle escape sequences
+NEWLINE_SYMBOL = _newline_env.replace('\\r', '\r').replace('\\n', '\n')
+NEWLINE_SYMBOL_BYTES = NEWLINE_SYMBOL.encode('utf-8')
 
 
 def get_int_env(key: str) -> int:

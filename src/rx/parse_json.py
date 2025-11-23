@@ -9,15 +9,14 @@ import os
 import subprocess
 import threading
 import time
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 
 from rx.cli import prometheus as prom
 from rx.models import ContextLine, Submatch
 from rx.parse import MAX_SUBPROCESSES, FileTask, create_file_tasks, scan_directory_for_text_files, validate_file
 from rx.rg_json import RgContextEvent, RgMatchEvent, parse_rg_json_event
+from rx.utils import NEWLINE_SYMBOL
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +24,9 @@ logger = logging.getLogger(__name__)
 DEBUG_MODE = os.getenv('RX_DEBUG', '').lower() in ('1', 'true', 'yes')
 
 
-def identify_matching_patterns(line_text: str, submatches: List[Submatch], pattern_ids: Dict[str, str]) -> List[str]:
+def identify_matching_patterns(
+    line_text: str, submatches: list[Submatch], pattern_ids: dict[str, str], rg_extra_args: list[str]
+) -> list[str]:
     """
     Identify which patterns actually matched the line by testing each pattern.
 
@@ -57,7 +58,11 @@ def identify_matching_patterns(line_text: str, submatches: List[Submatch], patte
     for pattern_id, pattern in pattern_ids.items():
         try:
             # Compile the pattern
-            regex = re.compile(pattern, re.IGNORECASE if '-i' in os.environ.get('RG_FLAGS', '') else 0)
+            # regex = re.compile(pattern, re.IGNORECASE if '-i' in os.environ.get('RG_FLAGS', '') else 0)
+            flags = re.NOFLAG
+            if rg_extra_args and '-i' in rg_extra_args:
+                flags |= re.IGNORECASE
+            regex = re.compile(pattern, flags)
 
             # Find all matches in the line
             pattern_matches = set(m.group() for m in regex.finditer(line_text))
@@ -79,11 +84,11 @@ def identify_matching_patterns(line_text: str, submatches: List[Submatch], patte
 
 def process_task_worker_json(
     task: FileTask,
-    pattern_ids: Dict[str, str],
+    pattern_ids: dict[str, str],
     rg_extra_args: list | None = None,
     context_before: int = 0,
     context_after: int = 0,
-) -> Tuple[FileTask, List[Dict], List[ContextLine], float]:
+) -> tuple[FileTask, list[dict], list[ContextLine], float]:
     """
     Worker function to process a single FileTask with multiple patterns using ripgrep --json.
     Runs dd | rg --json pipeline and returns rich match data with optional context.
@@ -253,7 +258,7 @@ def process_task_worker_json(
                             'offset': absolute_offset,
                             'pattern_ids': matching_pattern_ids,
                             'line_number': match_data.line_number,
-                            'line_text': match_data.lines.text.rstrip('\n'),
+                            'line_text': match_data.lines.text.rstrip(NEWLINE_SYMBOL),
                             'submatches': submatches,
                         }
                     )
@@ -271,8 +276,8 @@ def process_task_worker_json(
                 if task.offset <= absolute_offset < task.offset + task.count:
                     context_lines.append(
                         ContextLine(
-                            line_number=context_data.line_number,
-                            line_text=context_data.lines.text.rstrip('\n'),
+                            relative_line_number=context_data.line_number,
+                            line_text=context_data.lines.text.rstrip(NEWLINE_SYMBOL),
                             absolute_offset=absolute_offset,
                         )
                     )
@@ -326,14 +331,14 @@ def process_task_worker_json(
 
 
 def parse_multiple_files_multipattern_json(
-    filepaths: List[str],
-    pattern_ids: Dict[str, str],
-    file_ids: Dict[str, str],
-    max_results: Optional[int] = None,
-    rg_extra_args: Optional[list] = None,
+    filepaths: list[str],
+    pattern_ids: dict[str, str],
+    file_ids: dict[str, str],
+    max_results: int | None = None,
+    rg_extra_args: list | None = None,
     context_before: int = 0,
     context_after: int = 0,
-) -> Tuple[List[Dict], Dict[str, List[ContextLine]]]:
+) -> tuple[list[dict], dict[str, list[ContextLine]], dict[str, int]]:
     """
     Parse multiple files with multiple patterns using JSON mode and return rich match data.
 
@@ -347,9 +352,10 @@ def parse_multiple_files_multipattern_json(
         context_after: Number of context lines after each match
 
     Returns:
-        Tuple of (matches_list, context_dict)
+        Tuple of (matches_list, context_dict, file_chunk_counts)
 
         matches_list: [{'pattern': 'p1', 'file': 'f1', 'offset': 100, 'line_number': 42, ...}, ...]
+        file_chunk_counts: {'f1': 1, 'f2': 5, ...} - number of chunks per file
         context_dict: {'p1:f1:100': [ContextLine(...), ...], ...}
     """
     if rg_extra_args is None:
@@ -369,12 +375,21 @@ def parse_multiple_files_multipattern_json(
     # Create reverse mapping: filepath -> file_id
     filepath_to_id = {v: k for k, v in file_ids.items()}
 
-    # Create tasks from all files
+    # Create tasks from all files and track chunk counts per file
     all_tasks = []
+    file_chunk_counts = {}  # file_id -> number of chunks/workers
+
     for filepath in filepaths:
         try:
             file_tasks = create_file_tasks(filepath)
             all_tasks.extend(file_tasks)
+
+            # Track how many chunks this file was split into
+            file_id = filepath_to_id.get(filepath)
+            if file_id:
+                file_chunk_counts[file_id] = len(file_tasks)
+                if len(file_tasks) > 1:
+                    logger.info(f"[PARSE_JSON] {filepath} split into {len(file_tasks)} chunks for parallel processing")
         except Exception as e:
             logger.warning(f"[PARSE_JSON] Skipping {filepath}: {e}")
 
@@ -411,7 +426,7 @@ def parse_multiple_files_multipattern_json(
                 for match_dict in match_dicts:
                     # Determine which patterns matched by analyzing the submatches
                     matching_pattern_ids = identify_matching_patterns(
-                        match_dict['line_text'], match_dict['submatches'], pattern_ids
+                        match_dict['line_text'], match_dict['submatches'], pattern_ids, rg_extra_args
                     )
 
                     # Create one match per pattern that matched this line
@@ -421,7 +436,7 @@ def parse_multiple_files_multipattern_json(
                                 'pattern': matching_pattern_id,
                                 'file': file_id,
                                 'offset': match_dict['offset'],
-                                'line_number': match_dict['line_number'],
+                                'relative_line_number': match_dict['line_number'],
                                 'line_text': match_dict['line_text'],
                                 'submatches': match_dict['submatches'],
                             }
@@ -461,18 +476,20 @@ def parse_multiple_files_multipattern_json(
 
     # Build a mapping of (file_id, line_number) -> match data for all matches
     # This helps us fill in matched lines that should appear in context but aren't in all_context_lines
-    match_line_map = {(match['file'], match['line_number']): match for match in matches}
+    match_line_map = {(match['file'], match['relative_line_number']): match for match in matches}
 
     # For each match, build context lines
     for match in matches:
-        match_line = match['line_number']
+        match_line = match['relative_line_number']
         match_file = match['file']
         match_pattern = match['pattern']
         composite_key = f"{match_pattern}:{match_file}:{match['offset']}"
 
         # Always create a ContextLine for the matched line itself
         matched_context_line = ContextLine(
-            line_number=match['line_number'], line_text=match['line_text'], absolute_offset=match['offset']
+            relative_line_number=match['relative_line_number'],
+            line_text=match['line_text'],
+            absolute_offset=match['offset'],
         )
 
         if context_before > 0 or context_after > 0:
@@ -484,24 +501,24 @@ def parse_multiple_files_multipattern_json(
                 for file_id, ctx_line in all_context_lines
                 if (
                     file_id == match_file
-                    and abs(ctx_line.line_number - match_line) <= max(context_before, context_after)
+                    and abs(ctx_line.relative_line_number - match_line) <= max(context_before, context_after)
                 )
             ]
 
             # Also check if any matched lines fall in the context range but aren't in nearby_context
             # This can happen when a line matches multiple patterns
-            context_line_numbers = {ctx.line_number for ctx in nearby_context}
+            context_line_numbers = {ctx.relative_line_number for ctx in nearby_context}
             for other_match in matches:
                 if (
                     other_match['file'] == match_file
-                    and other_match['line_number'] != match_line
-                    and abs(other_match['line_number'] - match_line) <= max(context_before, context_after)
-                    and other_match['line_number'] not in context_line_numbers
+                    and other_match['relative_line_number'] != match_line
+                    and abs(other_match['relative_line_number'] - match_line) <= max(context_before, context_after)
+                    and other_match['relative_line_number'] not in context_line_numbers
                 ):
                     # This matched line is in range but missing from context - add it
                     nearby_context.append(
                         ContextLine(
-                            line_number=other_match['line_number'],
+                            relative_line_number=other_match['relative_line_number'],
                             line_text=other_match['line_text'],
                             absolute_offset=other_match['offset'],
                         )
@@ -509,7 +526,7 @@ def parse_multiple_files_multipattern_json(
 
             # Combine context lines with the matched line and sort by line number
             all_lines = nearby_context + [matched_context_line]
-            all_lines.sort(key=lambda ctx: ctx.line_number)
+            all_lines.sort(key=lambda ctx: ctx.relative_line_number)
             context_dict[composite_key] = all_lines
         else:
             # context=0: only show the matched line itself
@@ -520,14 +537,14 @@ def parse_multiple_files_multipattern_json(
         f"{len(context_dict)} context groups, total worker time: {total_time:.3f}s"
     )
 
-    return matches, context_dict
+    return matches, context_dict, file_chunk_counts
 
 
 def parse_paths_json(
-    paths: List[str],
-    regexps: List[str],
-    max_results: Optional[int] = None,
-    rg_extra_args: Optional[list] = None,
+    paths: list[str],
+    regexps: list[str],
+    max_results: int | None = None,
+    rg_extra_args: list | None = None,
     context_before: int = 0,
     context_after: int = 0,
 ) -> dict:
@@ -598,8 +615,14 @@ def parse_paths_json(
 
     # Parse all files using JSON-based multi-file approach
     logger.info(f"[PARSE_JSON] Parsing {len(all_files_to_parse)} file(s) with {len(pattern_ids)} pattern(s)")
-    matches, context_dict = parse_multiple_files_multipattern_json(
-        all_files_to_parse, pattern_ids, file_ids, max_results, rg_extra_args, context_before, context_after
+    matches, context_dict, file_chunk_counts = parse_multiple_files_multipattern_json(
+        all_files_to_parse,
+        pattern_ids,
+        file_ids,
+        max_results,
+        rg_extra_args,
+        context_before,
+        context_after,
     )
 
     result = {
@@ -608,6 +631,7 @@ def parse_paths_json(
         "matches": matches,
         "scanned_files": all_files_to_parse if all_scanned_dirs else [],
         "skipped_files": all_skipped_files,
+        "file_chunks": file_chunk_counts,
     }
 
     # Always include context_lines when samples mode is active (even if context=0)

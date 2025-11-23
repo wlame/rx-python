@@ -2,23 +2,16 @@
 
 import logging
 import os
-import time
-import threading
-
-from queue import Queue
-from dataclasses import dataclass
-from typing import List, Tuple, Dict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 # Import noop prometheus stub by default (CLI mode)
 # Real prometheus is only imported in web.py for server mode
 from rx.cli import prometheus as prom
-
-# Import ripgrep JSON parser
-from rx.rg_json import parse_rg_json_event, RgMatchEvent, RgContextEvent
-from rx.models import Submatch, ContextLine
-
+from rx.utils import NEWLINE_SYMBOL, NEWLINE_SYMBOL_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +51,7 @@ def is_text_file(filepath: str, sample_size: int = 8192) -> bool:
         return False
 
 
-def scan_directory_for_text_files(dirpath: str, max_files: int = MAX_FILES) -> Tuple[List[str], List[str]]:
+def scan_directory_for_text_files(dirpath: str, max_files: int = MAX_FILES) -> tuple[list[str], list[str]]:
     text_files = []
     skipped_files = []
 
@@ -126,12 +119,12 @@ def find_next_newline(filename: str, offset: int) -> int:
         if not chunk:
             return offset
 
-        newline_pos = chunk.find(b'\n')
+        newline_pos = chunk.find(NEWLINE_SYMBOL_BYTES)
         if newline_pos == -1:
             # No newline found in this chunk, return end of chunk
             return offset + len(chunk)
 
-        return offset + newline_pos + 1  # +1 to position after the newline
+        return offset + newline_pos + len(NEWLINE_SYMBOL_BYTES)  # Position after the newline
 
 
 def get_file_offsets(filename: str, file_size_bytes: int) -> list[int]:
@@ -191,7 +184,7 @@ def get_file_offsets(filename: str, file_size_bytes: int) -> list[int]:
     return aligned_offsets
 
 
-def create_file_tasks(filename: str) -> List[FileTask]:
+def create_file_tasks(filename: str) -> list[FileTask]:
     file_size = os.path.getsize(filename)
     offsets = get_file_offsets(filename, file_size)
 
@@ -208,8 +201,8 @@ def create_file_tasks(filename: str) -> List[FileTask]:
 
 
 def _process_task_worker(
-    task: FileTask, pattern_ids: Dict[str, str], rg_extra_args: list | None = None
-) -> Tuple[FileTask, List[Tuple[int, List[str]]], float]:
+    task: FileTask, pattern_ids: dict[str, str], rg_extra_args: list | None = None
+) -> tuple[FileTask, list[tuple[int, list[str]]], float]:
     """
     Worker function to process a single FileTask with multiple patterns.
     Runs dd | rg pipeline and returns byte offsets with matched pattern IDs.
@@ -442,12 +435,12 @@ def parse_paths(
 
 
 def _parse_multiple_files_multipattern(
-    filepaths: List[str],
-    pattern_ids: Dict[str, str],
-    file_ids: Dict[str, str],
+    filepaths: list[str],
+    pattern_ids: dict[str, str],
+    file_ids: dict[str, str],
     max_results: int | None = None,
     rg_extra_args: list | None = None,
-) -> List[Dict]:
+) -> list[dict]:
     """
     Parse multiple files with multiple patterns and return matches in ID-based format.
 
@@ -539,8 +532,8 @@ def _parse_multiple_files_multipattern(
 
 
 def parse_multiple_files(
-    filepaths: List[str], regex: str, max_results: int | None = None, rg_extra_args: list = None
-) -> List[dict]:
+    filepaths: list[str], regex: str, max_results: int | None = None, rg_extra_args: list = None
+) -> list[dict]:
     """
     Parse multiple files for regex pattern using streaming worker pool.
     Creates tasks from all files and processes them in parallel.
@@ -711,7 +704,8 @@ def get_context(
         start_idx = max(0, target_line_idx - before_context)
         end_idx = min(len(lines), target_line_idx + after_context + 1)
 
-        context_lines = [line.rstrip('\n\r') for line in lines[start_idx:end_idx]]
+        # Strip the configured newline symbol and also \r as fallback
+        context_lines = [line.rstrip(NEWLINE_SYMBOL + '\r') for line in lines[start_idx:end_idx]]
         result[offset] = context_lines
 
     return result

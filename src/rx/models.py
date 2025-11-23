@@ -1,7 +1,8 @@
 """Pydantic models for API requests and responses"""
 
 import re
-from typing import List, Dict, Optional, Any
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -12,27 +13,27 @@ class HealthResponse(BaseModel):
     ripgrep_available: bool = Field(..., example=True)
     app_version: str = Field(..., example="0.1.0", description="Application version")
     python_version: str = Field(..., example="3.13.1", description="Python interpreter version")
-    os_info: Dict[str, str] = Field(
+    os_info: dict[str, str] = Field(
         ...,
         example={"system": "Darwin", "release": "23.0.0", "version": "Darwin Kernel Version 23.0.0"},
         description="Operating system information",
     )
-    system_resources: Dict[str, Any] = Field(
+    system_resources: dict[str, Any] = Field(
         ...,
         example={"cpu_cores": 8, "cpu_cores_physical": 4, "ram_total_gb": 16.0, "ram_available_gb": 8.5},
         description="System resources (CPU cores and RAM)",
     )
-    python_packages: Dict[str, str] = Field(
+    python_packages: dict[str, str] = Field(
         default_factory=dict,
         example={"fastapi": "0.115.6", "pydantic": "2.11.0", "uvicorn": "0.34.0"},
         description="Key Python package versions",
     )
-    constants: Dict[str, Any] = Field(
+    constants: dict[str, Any] = Field(
         default_factory=dict,
         example={"LOG_LEVEL": "INFO", "MIN_CHUNK_SIZE_MB": 20, "MAX_SUBPROCESSES": 20},
         description="Application configuration constants",
     )
-    environment: Dict[str, str] = Field(
+    environment: dict[str, str] = Field(
         default_factory=dict, example={"RX_LOG_LEVEL": "INFO"}, description="Application-related environment variables"
     )
     docs_url: str = Field(..., example="https://github.com/wlame/rx", description="Link to application documentation")
@@ -56,12 +57,16 @@ class ContextLine(BaseModel):
     """A context line (non-matching line shown for context)
 
     Attributes:
-        line_number: Line number in the file (1-indexed)
+        relative_line_number: Line number relative to file start (1-indexed).
+                             When file_chunks=1, this is the absolute line number.
+                             When file_chunks>1, this may be relative to chunk boundary.
         line_text: The actual line content
         absolute_offset: Byte offset from start of file to start of this line
     """
 
-    line_number: int = Field(..., example=42, description="Line number (1-indexed)")
+    relative_line_number: int = Field(
+        ..., example=42, description="Line number in file (1-indexed, see file_chunks to determine if absolute)"
+    )
     line_text: str = Field(..., example="  previous line", description="Line content")
     absolute_offset: int = Field(..., example=1234, description="Byte offset in file")
 
@@ -73,7 +78,9 @@ class Match(BaseModel):
         pattern: Pattern ID (e.g., 'p1', 'p2')
         file: File ID (e.g., 'f1', 'f2')
         offset: Absolute byte offset in file where the matched LINE starts
-        line_number: Line number where match occurred (1-indexed, optional)
+        relative_line_number: Line number relative to file start (1-indexed, optional).
+                             When file_chunks=1, this is the absolute line number.
+                             When file_chunks>1, this may be relative to chunk boundary.
         line_text: The actual line content that matched (optional)
         submatches: List of submatch details with positions (optional)
     """
@@ -81,39 +88,52 @@ class Match(BaseModel):
     pattern: str = Field(..., example="p1", description="Pattern ID (p1, p2, ...)")
     file: str = Field(..., example="f1", description="File ID (f1, f2, ...)")
     offset: int = Field(..., example=123, description="Byte offset in file where matched line starts")
-    line_number: Optional[int] = Field(None, example=42, description="Line number (1-indexed)")
-    line_text: Optional[str] = Field(None, example="error: something failed", description="The matched line")
-    submatches: Optional[List[Submatch]] = Field(None, description="Submatch details with positions")
+    relative_line_number: int | None = Field(
+        None, example=42, description="Line number in file (1-indexed, see file_chunks to determine if absolute)"
+    )
+    line_text: str | None = Field(None, example="error: something failed", description="The matched line")
+    submatches: list[Submatch] | None = Field(None, description="Submatch details with positions")
 
 
 class TraceResponse(BaseModel):
     """Response from trace endpoint using ID-based structure for multi-pattern support
 
     Attributes:
-        path: Path(s) that were searched
+        path: Path(s) that were searched (list of paths)
         time: Search duration in seconds
         patterns: Mapping of pattern IDs to pattern strings
         files: Mapping of file IDs to file paths
         matches: List of matches with rich metadata
         scanned_files: List of files that were scanned
         skipped_files: List of files that were skipped
+        file_chunks: Optional mapping of file IDs to number of chunks/workers used
         context_lines: Optional mapping of match composite keys to context lines
         before_context: Number of context lines shown before matches (if context requested)
         after_context: Number of context lines shown after matches (if context requested)
+        max_results: Maximum number of results requested (None if not specified)
     """
 
-    path: str = Field(..., example="/path/to/dir")
+    path: list[str] = Field(..., example=["/path/to/dir"], description="List of paths that were searched")
     time: float = Field(..., example=0.123)
-    patterns: Dict[str, str] = Field(..., example={"p1": "error", "p2": "warning"})
-    files: Dict[str, str] = Field(..., example={"f1": "/path/file.log"})
-    matches: List[Match] = Field(default=[], example=[])
-    scanned_files: List[str] = Field(default=[], example=[])
-    skipped_files: List[str] = Field(default=[], example=[])
+    patterns: dict[str, str] = Field(..., example={"p1": "error", "p2": "warning"})
+    files: dict[str, str] = Field(..., example={"f1": "/path/file.log"})
+    matches: list[Match] = Field(default=[], example=[])
+    scanned_files: list[str] = Field(default=[], example=[])
+    skipped_files: list[str] = Field(default=[], example=[])
+    max_results: int | None = Field(None, description="Maximum number of results requested (None if not specified)")
+
+    # File chunking metadata - shows how files were processed
+    file_chunks: dict[str, int] | None = Field(
+        None,
+        description="Number of chunks/workers used per file (file_id -> num_chunks). "
+        "1 = single worker (no chunking), >1 = parallel processing with multiple workers",
+        example={"f1": 1, "f2": 5, "f3": 20},
+    )
 
     # Context lines are stored with composite key: "p1:f1:100" -> [ContextLine, ...]
-    context_lines: Optional[Dict[str, List[ContextLine]]] = Field(None, description="Context lines around matches")
-    before_context: Optional[int] = Field(None, example=3, description="Lines shown before matches")
-    after_context: Optional[int] = Field(None, example=3, description="Lines shown after matches")
+    context_lines: dict[str, list[ContextLine]] | None = Field(None, description="Context lines around matches")
+    before_context: int | None = Field(None, example=3, description="Lines shown before matches")
+    after_context: int | None = Field(None, example=3, description="Lines shown after matches")
 
     def to_cli(self, colorize: bool = False) -> str:
         """Format response for CLI output (human-readable, uses values instead of IDs)"""
@@ -131,11 +151,12 @@ class TraceResponse(BaseModel):
 
         lines = []
 
-        # Path in bold cyan
+        # Path(s) in bold cyan - handle single or multiple paths
+        path_display = ", ".join(self.path) if len(self.path) > 1 else self.path[0]
         if colorize:
-            lines.append(f"{GREY}Path:{RESET} {BOLD_CYAN}{self.path}{RESET}")
+            lines.append(f"{GREY}Path:{RESET} {BOLD_CYAN}{path_display}{RESET}")
         else:
-            lines.append(f"Path: {self.path}")
+            lines.append(f"Path: {path_display}")
 
         # Show patterns with magenta color
         if len(self.patterns) == 1:
@@ -171,6 +192,19 @@ class TraceResponse(BaseModel):
                 lines.append(f"{GREY}Files skipped:{RESET} {GREY}{len(self.skipped_files)}{RESET}")
             else:
                 lines.append(f"Files skipped: {len(self.skipped_files)}")
+
+        # File chunking info (show if any files were chunked)
+        if self.file_chunks:
+            chunked_files = [fid for fid, count in self.file_chunks.items() if count > 1]
+            if chunked_files:
+                total_chunks = sum(self.file_chunks.values())
+                if colorize:
+                    lines.append(
+                        f"{GREY}Parallel workers:{RESET} {CYAN}{total_chunks}{RESET} "
+                        f"{GREY}({len(chunked_files)} file(s) chunked){RESET}"
+                    )
+                else:
+                    lines.append(f"Parallel workers: {total_chunks} ({len(chunked_files)} file(s) chunked)")
 
         # Matches count in bold green
         if colorize:
@@ -230,10 +264,10 @@ class AnalyseResponse(BaseModel):
 
     path: str = Field(..., description="Analyzed path(s)")
     time: float = Field(..., description="Analysis time in seconds")
-    files: Dict[str, str] = Field(..., description="File ID to filepath mapping")
-    results: List[FileAnalysisResult] = Field(..., description="Analysis results for each file")
-    scanned_files: List[str] = Field(..., description="List of successfully scanned files")
-    skipped_files: List[str] = Field(..., description="List of skipped files")
+    files: dict[str, str] = Field(..., description="File ID to filepath mapping")
+    results: list[FileAnalysisResult] = Field(..., description="Analysis results for each file")
+    scanned_files: list[str] = Field(..., description="List of successfully scanned files")
+    skipped_files: list[str] = Field(..., description="List of skipped files")
 
     def to_cli(self, colorize: bool = False) -> str:
         """Format analysis response for CLI output."""
@@ -297,18 +331,18 @@ class AnalyseResponse(BaseModel):
 class ComplexityDetails(BaseModel):
     """Breakdown of complexity scoring components"""
 
-    nested_quantifiers: Optional[int] = Field(None, example=50)
-    greedy_sequences: Optional[int] = Field(None, example=25)
-    lookarounds: Optional[int] = Field(None, example=15)
-    backreferences: Optional[int] = Field(None, example=20)
-    alternation: Optional[int] = Field(None, example=10)
-    character_classes: Optional[int] = Field(None, example=2)
-    quantifiers: Optional[int] = Field(None, example=6)
-    anchors: Optional[int] = Field(None, example=2)
-    literals: Optional[float] = Field(None, example=0.5)
-    star_height_multiplier: Optional[float] = Field(None, example=1.5)
-    star_height_depth: Optional[int] = Field(None, example=2)
-    length_multiplier: Optional[float] = Field(None, example=1.2)
+    nested_quantifiers: int | None = Field(None, example=50)
+    greedy_sequences: int | None = Field(None, example=25)
+    lookarounds: int | None = Field(None, example=15)
+    backreferences: int | None = Field(None, example=20)
+    alternation: int | None = Field(None, example=10)
+    character_classes: int | None = Field(None, example=2)
+    quantifiers: int | None = Field(None, example=6)
+    anchors: int | None = Field(None, example=2)
+    literals: float | None = Field(None, example=0.5)
+    star_height_multiplier: float | None = Field(None, example=1.5)
+    star_height_depth: int | None = Field(None, example=2)
+    length_multiplier: float | None = Field(None, example=1.2)
 
 
 class ComplexityResponse(BaseModel):
@@ -318,7 +352,7 @@ class ComplexityResponse(BaseModel):
     score: float = Field(..., example=58.5)
     level: str = Field(..., example="moderate")
     risk: str = Field(..., example="Medium - reasonable performance expected")
-    warnings: List[str] = Field(..., example=["Found 1 nested quantifier(s) - CRITICAL ReDoS risk"])
+    warnings: list[str] = Field(..., example=["Found 1 nested quantifier(s) - CRITICAL ReDoS risk"])
     details: ComplexityDetails
     pattern_length: int = Field(..., example=5)
 
@@ -415,10 +449,10 @@ class SamplesResponse(BaseModel):
     """Response from samples endpoint"""
 
     path: str = Field(..., example="/path/to/file.txt")
-    offsets: List[int] = Field(..., example=[123, 456])
+    offsets: list[int] = Field(..., example=[123, 456])
     before_context: int = Field(..., example=3)
     after_context: int = Field(..., example=3)
-    samples: Dict[str, List[str]] = Field(
+    samples: dict[str, list[str]] = Field(
         ...,
         example={
             "123": ["Line before", "Line with match", "Line after"],

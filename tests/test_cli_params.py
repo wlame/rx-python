@@ -4,7 +4,9 @@ import json
 import os
 import tempfile
 from pathlib import Path
+
 from click.testing import CliRunner
+
 from rx.cli.search import search_command
 
 
@@ -81,7 +83,7 @@ class TestCLISamples:
             assert isinstance(lines, list)
             # Each line should be a dict with line_number, line_text, absolute_offset
             for line in lines:
-                assert "line_number" in line
+                assert "relative_line_number" in line
                 assert "line_text" in line
                 assert "absolute_offset" in line
             assert len(lines) > 0
@@ -205,7 +207,7 @@ class TestCLIPositionalAndNamedParams:
         result = self.runner.invoke(search_command, ["--path", self.test_file, "--regex", "error", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert data["path"] == self.test_file
+        assert data["path"] == [self.test_file]  # path is now a list
         assert "p1" in data["patterns"]
         assert data["patterns"]["p1"] == "error"
 
@@ -232,7 +234,7 @@ class TestCLIPositionalAndNamedParams:
         result = self.runner.invoke(search_command, ["--file", self.test_file, "--regexp", "error", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
-        assert data["path"] == self.test_file
+        assert data["path"] == [self.test_file]  # path is now a list
         assert "p1" in data["patterns"]
         assert data["patterns"]["p1"] == "error"
 

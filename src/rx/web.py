@@ -1,33 +1,32 @@
 import logging
 import os
 import platform
+from contextlib import asynccontextmanager
+from time import time
+
+import anyio
 import psutil
 import sh
-import anyio
-
-from contextlib import asynccontextmanager
-from typing import List
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
-from time import time
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from rx.__version__ import __version__
-from rx.parse import validate_file, get_context
-from rx.parse_json import parse_paths_json
-from rx.analyse import calculate_regex_complexity, analyse_path
-from rx.models import (
-    HealthResponse,
-    TraceResponse,
-    ComplexityResponse,
-    SamplesResponse,
-    AnalyseResponse,
-    Match,
-)
+from rx import parse as parse_module
 
 # Import real prometheus for server mode and swap it into parse module
 from rx import prometheus as prom
-from rx import parse as parse_module
+from rx.__version__ import __version__
+from rx.analyse import analyse_path, calculate_regex_complexity
+from rx.models import (
+    AnalyseResponse,
+    ComplexityResponse,
+    HealthResponse,
+    Match,
+    SamplesResponse,
+    TraceResponse,
+)
+from rx.parse import get_context, validate_file
+from rx.parse_json import parse_paths_json
 
 # Replace the noop prometheus in parse module with real one
 parse_module.prom = prom
@@ -161,6 +160,7 @@ def get_constants() -> dict:
     # Collect application constants
     from rx import parse as parse_module
     from rx import parse_json
+    from rx.utils import NEWLINE_SYMBOL
 
     return {
         'LOG_LEVEL': log_level_name,
@@ -169,14 +169,15 @@ def get_constants() -> dict:
         'MAX_SUBPROCESSES': parse_module.MAX_SUBPROCESSES,
         'MIN_CHUNK_SIZE_MB': parse_module.MIN_CHUNK_SIZE // (1024 * 1024),
         'MAX_FILES': parse_module.MAX_FILES,
+        'NEWLINE_SYMBOL': repr(NEWLINE_SYMBOL),  # Show as repr to see escape sequences
     }
 
 
 def get_app_env_variables() -> dict:
     env_vars = {}
-    app_env_prefixes = ['RX_', 'UVICORN_', 'PROMETHEUS_']
+    app_env_prefixes = ['RX_', 'UVICORN_', 'PROMETHEUS_', 'NEWLINE_SYMBOL']
     for key, value in os.environ.items():
-        if any(key.startswith(prefix) for prefix in app_env_prefixes):
+        if key == 'NEWLINE_SYMBOL' or any(key.startswith(prefix) for prefix in app_env_prefixes):
             env_vars[key] = value
 
     return env_vars
@@ -352,17 +353,16 @@ async def trace(
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
     # Build response using ID-based structure
-    # For display, show all paths as comma-separated string if multiple
-    display_path = ", ".join(path) if len(path) > 1 else path[0]
-
     response = TraceResponse(
-        path=display_path,
+        path=path,  # Pass as list directly
         time=parsing_time,
         patterns=result['patterns'],
         files=result['files'],
         matches=[Match(**m) for m in result['matches']],
         scanned_files=result['scanned_files'],
         skipped_files=result['skipped_files'],
+        file_chunks=result.get('file_chunks'),
+        max_results=max_results,  # Include max_results in response
     )
 
     return response
@@ -440,7 +440,7 @@ async def complexity(
     },
 )
 async def analyse(
-    path: str | List[str] = Query(
+    path: str | list[str] = Query(
         ..., description="File or directory path(s) to analyze", examples=["/var/log/app.log"]
     ),
     max_workers: int = Query(10, description="Maximum number of parallel workers", ge=1, le=50, examples=[10]),

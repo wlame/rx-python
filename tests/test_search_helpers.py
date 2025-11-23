@@ -1,20 +1,21 @@
 """Unit tests for search.py helper functions"""
 
-import pytest
-import click
 from io import StringIO
 from unittest.mock import Mock, patch
 
+import click
+import pytest
+
 from rx.cli.search import (
-    format_context_header,
-    find_match_for_context,
     build_lines_dict,
-    highlight_pattern_in_line,
     display_context_block,
     display_samples_output,
+    find_match_for_context,
+    format_context_header,
     handle_samples_output,
+    highlight_pattern_in_line,
 )
-from rx.models import TraceResponse, Match, ContextLine
+from rx.models import ContextLine, Match, TraceResponse
 
 
 class TestFormatContextHeader:
@@ -52,11 +53,11 @@ class TestFindMatchForContext:
     def test_finds_matching_line(self):
         """Test finding a match that exists"""
         matches = [
-            Match(pattern="p1", file="f1", offset=100, line_number=5, line_text="error found"),
-            Match(pattern="p1", file="f1", offset=200, line_number=10, line_text="warning found"),
+            Match(pattern="p1", file="f1", offset=100, relative_line_number=5, line_text="error found"),
+            Match(pattern="p1", file="f1", offset=200, relative_line_number=10, line_text="warning found"),
         ]
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},
@@ -73,7 +74,7 @@ class TestFindMatchForContext:
     def test_returns_none_when_not_found(self):
         """Test returns None when match doesn't exist"""
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},
@@ -90,13 +91,13 @@ class TestFindMatchForContext:
     def test_finds_correct_match_among_many(self):
         """Test finds the right match when multiple exist"""
         matches = [
-            Match(pattern="p1", file="f1", offset=100, line_number=5, line_text="first"),
-            Match(pattern="p2", file="f1", offset=100, line_number=5, line_text="second"),
-            Match(pattern="p1", file="f2", offset=100, line_number=5, line_text="third"),
-            Match(pattern="p1", file="f1", offset=200, line_number=10, line_text="fourth"),
+            Match(pattern="p1", file="f1", offset=100, relative_line_number=5, line_text="first"),
+            Match(pattern="p2", file="f1", offset=100, relative_line_number=5, line_text="second"),
+            Match(pattern="p1", file="f2", offset=100, relative_line_number=5, line_text="third"),
+            Match(pattern="p1", file="f1", offset=200, relative_line_number=10, line_text="fourth"),
         ]
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error", "p2": "warning"},
             files={"f1": "/test1.txt", "f2": "/test2.txt"},
@@ -116,9 +117,9 @@ class TestBuildLinesDict:
     def test_builds_dict_from_context_lines(self):
         """Test building dict from ContextLine objects"""
         ctx_lines = [
-            ContextLine(line_number=5, line_text="line 5", absolute_offset=100),
-            ContextLine(line_number=6, line_text="line 6", absolute_offset=120),
-            ContextLine(line_number=7, line_text="line 7", absolute_offset=140),
+            ContextLine(relative_line_number=5, line_text="line 5", absolute_offset=100),
+            ContextLine(relative_line_number=6, line_text="line 6", absolute_offset=120),
+            ContextLine(relative_line_number=7, line_text="line 7", absolute_offset=140),
         ]
 
         result = build_lines_dict(ctx_lines, None, None)
@@ -128,8 +129,8 @@ class TestBuildLinesDict:
     def test_adds_matched_line(self):
         """Test that matched line is added to dict"""
         ctx_lines = [
-            ContextLine(line_number=5, line_text="before", absolute_offset=100),
-            ContextLine(line_number=7, line_text="after", absolute_offset=140),
+            ContextLine(relative_line_number=5, line_text="before", absolute_offset=100),
+            ContextLine(relative_line_number=7, line_text="after", absolute_offset=140),
         ]
 
         result = build_lines_dict(ctx_lines, "matched line", 6)
@@ -139,8 +140,8 @@ class TestBuildLinesDict:
     def test_handles_dict_context_lines(self):
         """Test building dict from dict-style context lines"""
         ctx_lines = [
-            {"line_number": 5, "line_text": "line 5"},
-            {"line_number": 6, "line_text": "line 6"},
+            {"relative_line_number": 5, "line_text": "line 5"},
+            {"relative_line_number": 6, "line_text": "line 6"},
         ]
 
         result = build_lines_dict(ctx_lines, None, None)
@@ -156,7 +157,7 @@ class TestBuildLinesDict:
     def test_matched_line_overrides_context(self):
         """Test that matched line takes precedence if line number conflicts"""
         ctx_lines = [
-            ContextLine(line_number=5, line_text="context version", absolute_offset=100),
+            ContextLine(relative_line_number=5, line_text="context version", absolute_offset=100),
         ]
 
         result = build_lines_dict(ctx_lines, "matched version", 5)
@@ -218,16 +219,16 @@ class TestDisplayContextBlock:
     def test_displays_complete_context_block(self, mock_echo):
         """Test displays header and context lines"""
         matches = [
-            Match(pattern="p1", file="f1", offset=100, line_number=5, line_text="matched line"),
+            Match(pattern="p1", file="f1", offset=100, relative_line_number=5, line_text="matched line"),
         ]
         context_lines = {
             "p1:f1:100": [
-                ContextLine(line_number=4, line_text="before", absolute_offset=80),
-                ContextLine(line_number=6, line_text="after", absolute_offset=120),
+                ContextLine(relative_line_number=4, line_text="before", absolute_offset=80),
+                ContextLine(relative_line_number=6, line_text="after", absolute_offset=120),
             ]
         }
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},
@@ -252,7 +253,7 @@ class TestDisplayContextBlock:
     def test_handles_invalid_composite_key(self, mock_echo):
         """Test handles malformed composite key gracefully"""
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},
@@ -281,7 +282,7 @@ class TestDisplaySamplesOutput:
     def test_displays_samples_header(self, mock_echo):
         """Test displays header with context info"""
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},
@@ -300,7 +301,7 @@ class TestDisplaySamplesOutput:
     def test_displays_no_context_message_when_empty(self, mock_echo):
         """Test shows message when no context available"""
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},
@@ -324,10 +325,10 @@ class TestHandleSamplesOutput:
     def test_outputs_json_when_requested(self, mock_echo):
         """Test outputs JSON format when output_json=True"""
         matches = [
-            Match(pattern="p1", file="f1", offset=100, line_number=5, line_text="error found"),
+            Match(pattern="p1", file="f1", offset=100, relative_line_number=5, line_text="error found"),
         ]
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},
@@ -349,7 +350,7 @@ class TestHandleSamplesOutput:
     def test_calls_display_function_for_cli_output(self, mock_display):
         """Test calls display_samples_output for CLI format"""
         response = TraceResponse(
-            path="/test.txt",
+            path=["/test.txt"],
             time=0.1,
             patterns={"p1": "error"},
             files={"f1": "/test.txt"},

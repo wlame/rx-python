@@ -1,17 +1,17 @@
 """Experimental features!! File analysis module"""
 
-import os
 import logging
+import os
 import statistics
-
-from datetime import datetime
-from time import time
-from typing import Callable, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime
+from time import time
+from typing import Any, Callable
 
-from rx.regex import calculate_regex_complexity
 from rx.parse import is_text_file
+from rx.regex import calculate_regex_complexity
+from rx.utils import NEWLINE_SYMBOL
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class FileAnalysisResult:
     line_length_stddev: float | None = None
 
     # Additional metrics can be added by plugins
-    custom_metrics: Dict[str, Any] = field(default_factory=dict)
+    custom_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 class FileAnalyzer:
@@ -64,9 +64,9 @@ class FileAnalyzer:
     """
 
     def __init__(self):
-        self.file_hooks: List[Callable] = []
-        self.line_hooks: List[Callable] = []
-        self.post_hooks: List[Callable] = []
+        self.file_hooks: list[Callable] = []
+        self.line_hooks: list[Callable] = []
+        self.post_hooks: list[Callable] = []
 
     def register_file_hook(self, hook: Callable):
         """
@@ -160,7 +160,7 @@ class FileAnalyzer:
             result.line_count = len(lines)
 
             # Analyze line lengths (excluding empty lines)
-            non_empty_lines = [line.rstrip('\n\r') for line in lines if line.strip()]
+            non_empty_lines = [line.rstrip(NEWLINE_SYMBOL + '\r') for line in lines if line.strip()]
             empty_lines = [line for line in lines if not line.strip()]
 
             result.empty_line_count = len(empty_lines)
@@ -193,7 +193,7 @@ class FileAnalyzer:
             logger.error(f"Failed to analyze text content of {filepath}: {e}")
 
 
-def analyse_path(paths: List[str], max_workers: int = 10) -> Dict[str, Any]:
+def analyse_path(paths: list[str], max_workers: int = 10) -> dict[str, Any]:
     """
     Analyze files at given paths.
 

@@ -260,7 +260,7 @@ class TestConsecutiveMatches:
 
             # Verify each line has proper structure
             for line in lines:
-                assert "line_number" in line
+                assert "relative_line_number" in line
                 assert "line_text" in line
                 assert "absolute_offset" in line
 
