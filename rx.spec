@@ -1,48 +1,62 @@
 # -*- mode: python ; coding: utf-8 -*-
+"""
+PyInstaller spec file for RX Tracer
+"""
 
-from PyInstaller.utils.hooks import collect_all
+import sys
+from PyInstaller.utils.hooks import collect_data_files
 
-# Collect all rx module files
-datas, binaries, hiddenimports = collect_all('rx')
+block_cipher = None
+
+# Collect data files if needed
+datas = []
+
+# Hidden imports that PyInstaller might miss
+hiddenimports = [
+    'rx',
+    'rx.cli',
+    'rx.cli.main',
+    'rx.cli.analyse',
+    'rx.cli.check',
+    'rx.cli.index',
+    'rx.cli.samples',
+    'rx.cli.search',
+    'rx.cli.serve',
+    'rx.parse',
+    'rx.models',
+    'rx.index',
+    'rx.analyse',
+    'rx.regex',
+    'rx.web',
+    'uvicorn',
+    'fastapi',
+    'click',
+    'sh',
+]
 
 a = Analysis(
     ['src/rx/cli/main.py'],
-    pathex=['src'],
-    binaries=binaries,
+    pathex=[],
+    binaries=[],
     datas=datas,
-    hiddenimports=hiddenimports + [
-        'rx',
-        'rx.web',
-        'rx.parse',
-        'rx.parse_json',
-        'rx.cli',
-        'rx.cli.main',
-        'rx.cli.search',
-        'rx.cli.analyse',
-        'rx.cli.check',
-        'rx.cli.serve',
-        'rx.cli.prometheus',
-        'rx.utils',
-        'rx.models',
-        'rx.analyse',
-        'rx.regex',
-        'rx.rg_json',
-        'rx.prometheus',
-        'rx.scheduler',
-    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
+    a.zipfiles,
     a.datas,
     [],
     name='rx',
@@ -54,7 +68,6 @@ exe = EXE(
     runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
-    argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,

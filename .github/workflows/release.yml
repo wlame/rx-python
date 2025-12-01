@@ -1,0 +1,153 @@
+name: Build and Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform to build (all, ubuntu, windows, macos)"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - ubuntu
+          - windows
+          - macos
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: ubuntu
+            artifact_name: rx-linux-x86_64
+            binary_path: dist/rx
+          - os: windows-latest
+            platform: windows
+            artifact_name: rx-windows-x86_64.exe
+            binary_path: dist/rx.exe
+          - os: macos-latest
+            platform: macos
+            artifact_name: rx-macos-x86_64
+            binary_path: dist/rx
+
+    # Skip builds based on manual workflow dispatch input
+    if: |
+      github.event_name == 'release' ||
+      github.event.inputs.platform == 'all' ||
+      github.event.inputs.platform == matrix.platform
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: |
+          uv sync --group dev --group build
+
+      - name: Install ripgrep (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: Install ripgrep (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install ripgrep
+
+      - name: Install ripgrep (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install ripgrep -y
+
+      - name: Run tests
+        run: |
+          uv run pytest
+
+      - name: Build with PyInstaller
+        run: |
+          uv run pyinstaller rx.spec
+
+      - name: Verify binary exists
+        shell: bash
+        run: |
+          ls -lh dist/
+          if [ ! -f "${{ matrix.binary_path }}" ]; then
+            echo "Binary not found at ${{ matrix.binary_path }}"
+            exit 1
+          fi
+
+      - name: Test binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          chmod +x ${{ matrix.binary_path }}
+          ${{ matrix.binary_path }} --version
+
+      - name: Test binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          ${{ matrix.binary_path }} --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.binary_path }}
+          if-no-files-found: error
+
+      - name: Upload to release (on release event)
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ${{ matrix.binary_path }}
+          asset_name: ${{ matrix.artifact_name }}
+          asset_content_type: application/octet-stream
+
+  create-checksums:
+    name: Create checksums
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create checksums
+        run: |
+          cd artifacts
+          find . -type f -exec sha256sum {} \; > ../checksums.txt
+          cat ../checksums.txt
+
+      - name: Upload checksums to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: checksums.txt
+          asset_name: checksums.txt
+          asset_content_type: text/plain

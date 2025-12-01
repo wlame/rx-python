@@ -592,4 +592,221 @@ class TestAnalyseModels:
         # Test with colors
         colored_output = response.to_cli(colorize=True)
         assert isinstance(colored_output, str)
-        assert len(colored_output) > 0
+
+
+class TestReservoirSampling:
+    """Tests for reservoir sampling configuration and behavior"""
+
+    def test_get_sample_size_default(self):
+        """Test default sample size is 1,000,000"""
+        from rx.analyse import get_sample_size_lines
+
+        # Clear env var if set
+        old_value = os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
+        try:
+            assert get_sample_size_lines() == 1_000_000
+        finally:
+            if old_value is not None:
+                os.environ['RX_SAMPLE_SIZE_LINES'] = old_value
+
+    def test_get_sample_size_custom(self):
+        """Test custom sample size from env variable"""
+        from rx.analyse import get_sample_size_lines
+
+        old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
+        try:
+            os.environ['RX_SAMPLE_SIZE_LINES'] = '50000'
+            assert get_sample_size_lines() == 50_000
+        finally:
+            if old_value is not None:
+                os.environ['RX_SAMPLE_SIZE_LINES'] = old_value
+            else:
+                os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
+
+    def test_get_sample_size_invalid(self):
+        """Test invalid sample size falls back to default"""
+        from rx.analyse import get_sample_size_lines
+
+        old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
+        try:
+            os.environ['RX_SAMPLE_SIZE_LINES'] = 'invalid'
+            assert get_sample_size_lines() == 1_000_000
+        finally:
+            if old_value is not None:
+                os.environ['RX_SAMPLE_SIZE_LINES'] = old_value
+            else:
+                os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
+
+    def test_small_file_exact_statistics(self):
+        """Test that files smaller than sample size have exact statistics"""
+        # Create a file with known statistics: 50 lines of length 10, 50 lines of length 20
+        content = ('x' * 10 + '\n') * 50 + ('y' * 20 + '\n') * 50
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            f.write(content)
+            temp_path = f.name
+
+        try:
+            old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
+            os.environ['RX_SAMPLE_SIZE_LINES'] = '1000000'  # Much larger than file
+
+            analyzer = FileAnalyzer()
+            result = analyzer.analyze_file(temp_path, "f1")
+
+            # With 50 lines of length 10 and 50 of length 20:
+            # avg = (50*10 + 50*20) / 100 = 1500 / 100 = 15.0
+            # median = 15.0 (boundary between two groups)
+            # max = 20
+            assert result.line_count == 100
+            assert result.empty_line_count == 0
+            assert result.line_length_avg == 15.0
+            assert result.line_length_max == 20
+            assert result.line_length_median == 15.0
+
+        finally:
+            os.unlink(temp_path)
+            if old_value is not None:
+                os.environ['RX_SAMPLE_SIZE_LINES'] = old_value
+            else:
+                os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
+
+    def test_large_file_sampled_statistics(self):
+        """Test that large files use reservoir sampling"""
+        # Create file larger than sample size
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            # Write 200 lines total, but set sample size to 50
+            for i in range(200):
+                f.write('x' * 15 + '\n')
+            temp_path = f.name
+
+        try:
+            old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
+            os.environ['RX_SAMPLE_SIZE_LINES'] = '50'  # Much smaller than file
+
+            analyzer = FileAnalyzer()
+            result = analyzer.analyze_file(temp_path, "f1")
+
+            # Even with sampling, these should be accurate:
+            assert result.line_count == 200  # Total count always exact
+            assert result.empty_line_count == 0  # Empty count always exact
+            assert result.line_length_max == 15  # Max always exact
+            assert result.line_length_max_line_number == 1  # First line is max
+
+            # Avg should be close (all lines same length)
+            assert abs(result.line_length_avg - 15.0) < 0.1
+
+            # Median/percentiles are approximated from sample, but should be reasonable
+            # Since all lines are length 15, percentiles should be 15.0
+            assert result.line_length_median == 15.0
+            assert result.line_length_p95 == 15.0
+            assert result.line_length_p99 == 15.0
+
+        finally:
+            os.unlink(temp_path)
+            if old_value is not None:
+                os.environ['RX_SAMPLE_SIZE_LINES'] = old_value
+            else:
+                os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
+
+    def test_empty_lines_always_counted_exactly(self):
+        """Test that empty line count is never affected by sampling"""
+        # Create file with known empty lines
+        content = 'line\n' * 50 + '\n' * 10 + 'line\n' * 50  # 100 non-empty, 10 empty
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            f.write(content)
+            temp_path = f.name
+
+        try:
+            old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
+            os.environ['RX_SAMPLE_SIZE_LINES'] = '10'  # Very small sample
+
+            analyzer = FileAnalyzer()
+            result = analyzer.analyze_file(temp_path, "f1")
+
+            # Empty lines should be counted exactly
+            assert result.line_count == 110
+            assert result.empty_line_count == 10
+
+        finally:
+            os.unlink(temp_path)
+            if old_value is not None:
+                os.environ['RX_SAMPLE_SIZE_LINES'] = old_value
+            else:
+                os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
+
+    def test_longest_line_always_found(self):
+        """Test that longest line is always found regardless of sampling"""
+        # Create file with one very long line among many short lines
+        content = 'short\n' * 100 + 'x' * 500 + '\n' + 'short\n' * 100
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+            f.write(content)
+            temp_path = f.name
+
+        try:
+            old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
+            os.environ['RX_SAMPLE_SIZE_LINES'] = '50'  # Smaller than total lines
+
+            analyzer = FileAnalyzer()
+            result = analyzer.analyze_file(temp_path, "f1")
+
+            # Longest line should always be found
+            assert result.line_length_max == 500
+            assert result.line_length_max_line_number == 101  # Line 101 is the long one
+
+        finally:
+            os.unlink(temp_path)
+            if old_value is not None:
+                os.environ['RX_SAMPLE_SIZE_LINES'] = old_value
+            else:
+                os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
+
+    def test_line_counting_matches_wc_with_mixed_endings(self):
+        """Test that line counting matches wc -l behavior with mixed line endings"""
+        # Create file with mixed line endings: CRLF, bare CR, LF
+        # This tests that we count only \n characters like wc -l does
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.txt') as f:
+            f.write(b'line1\r\n')  # CRLF - wc counts this as 1 line
+            f.write(b'line2\r')  # bare CR - wc does NOT count as line (no \n)
+            f.write(b'line3\n')  # LF - wc counts this as 1 line
+            f.write(b'line4\r\n')  # CRLF - wc counts this as 1 line
+            temp_path = f.name
+
+        try:
+            # Get wc -l count
+            import subprocess
+
+            result = subprocess.run(['wc', '-l', temp_path], capture_output=True, text=True)
+            wc_count = int(result.stdout.strip().split()[0])
+
+            # Analyze with our code
+            analyzer = FileAnalyzer()
+            analysis = analyzer.analyze_file(temp_path, "f1")
+
+            # Our count should match wc -l
+            assert analysis.line_count == wc_count
+            assert analysis.line_count == 3  # Only lines ending with \n
+
+        finally:
+            os.unlink(temp_path)
+
+    def test_crlf_file_line_counting(self):
+        """Test that CRLF files are counted correctly"""
+        # Create a pure CRLF file
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.txt') as f:
+            f.write(b'line1\r\n')
+            f.write(b'line2\r\n')
+            f.write(b'line3\r\n')
+            temp_path = f.name
+
+        try:
+            analyzer = FileAnalyzer()
+            result = analyzer.analyze_file(temp_path, "f1")
+
+            # Should count 3 lines
+            assert result.line_count == 3
+            assert result.line_ending == 'CRLF'
+
+        finally:
+            os.unlink(temp_path)

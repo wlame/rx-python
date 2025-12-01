@@ -798,8 +798,15 @@ def get_context_by_lines(
         # Calculate how many lines total we need to read
         lines_to_read = before_context + 1 + after_context + lines_to_skip
 
-        # Read enough bytes (estimate based on max line length)
-        bytes_to_read = lines_to_read * max_line_length
+        # Use average line length from analysis if available, with safety margin
+        analysis = index_data.get("analysis", {})
+        avg_line_length = analysis.get("line_length_avg", 100)
+        max_line_in_file = analysis.get("line_length_max", 1000)
+
+        # Estimate bytes needed with generous buffer
+        # Use 2x average + max as safety margin (handles variability)
+        estimated_line_size = int(2 * avg_line_length + max_line_in_file)
+        bytes_to_read = lines_to_read * estimated_line_size
 
         # Read the chunk
         try:
@@ -811,27 +818,43 @@ def get_context_by_lines(
             result[target_line] = []
             continue
 
-        # Split into lines
-        lines = chunk.decode("utf-8", errors="replace").splitlines(keepends=True)
+        # Split into lines on \n only (to match wc -l and analyse behavior)
+        # Do NOT use splitlines() as it treats \r, \n, and \r\n all as separators
+        # which creates extra lines with CRLF files that have bare \r characters
+        decoded_chunk = chunk.decode("utf-8", errors="replace")
 
-        # Skip to the start line and extract context
-        if lines_to_skip < len(lines):
-            # Calculate actual indices within read lines
-            start_idx = lines_to_skip
-            # Target line is at: lines_to_skip + before_context
-            target_idx = lines_to_skip + before_context
-            end_idx = min(len(lines), target_idx + after_context + 1)
+        # Split on \n, keeping the line separator
+        if '\n' in decoded_chunk:
+            # Split by \n but keep it in the lines
+            parts = decoded_chunk.split('\n')
+            lines = [parts[i] + '\n' for i in range(len(parts) - 1)]
+            # Add last part only if it's not empty (no trailing \n)
+            if parts[-1]:
+                lines.append(parts[-1])
+        else:
+            # No newlines in chunk
+            lines = [decoded_chunk] if decoded_chunk else []
 
-            # Adjust start if we're at the beginning of file
-            if start_line_needed == 1 and indexed_line == 1:
-                start_idx = 0
-                target_idx = target_line - 1
-                end_idx = min(len(lines), target_idx + after_context + 1)
-                start_idx = max(0, target_idx - before_context)
+        # We need to actually count lines from indexed position
+        lines_from_indexed = len(lines)
+
+        # Calculate the target line's position within our read chunk
+        # target_line is absolute, indexed_line is where we started reading
+        target_offset_in_chunk = target_line - indexed_line
+
+        # Check if we read enough lines to include our target + context
+        if target_offset_in_chunk < lines_from_indexed:
+            # Calculate context window
+            start_idx = max(0, target_offset_in_chunk - before_context)
+            end_idx = min(lines_from_indexed, target_offset_in_chunk + after_context + 1)
 
             context_lines = [line.rstrip(NEWLINE_SYMBOL + "\r") for line in lines[start_idx:end_idx]]
             result[target_line] = context_lines
         else:
+            # Didn't read enough lines - this shouldn't happen with our buffer
+            logger.warning(
+                f"Didn't read enough lines for line {target_line} (read {lines_from_indexed}, needed {target_offset_in_chunk + after_context + 1})"
+            )
             result[target_line] = []
 
     return result
@@ -849,10 +872,21 @@ def _get_context_by_lines_simple(
     """
     result: dict[int, list[str]] = {}
 
-    # Read all lines
+    # Read all lines using binary mode to match wc -l behavior
+    # Split on \n only, not on \r (which text mode would do)
     try:
-        with open(filename, "r", encoding="utf-8", errors="replace") as f:
-            all_lines = f.readlines()
+        with open(filename, "rb") as f:
+            content = f.read()
+
+        # Decode and split on \n only
+        decoded = content.decode("utf-8", errors="replace")
+        if '\n' in decoded:
+            parts = decoded.split('\n')
+            all_lines = [parts[i] + '\n' for i in range(len(parts) - 1)]
+            if parts[-1]:
+                all_lines.append(parts[-1])
+        else:
+            all_lines = [decoded] if decoded else []
     except IOError as e:
         logger.error(f"Failed to read file {filename}: {e}")
         for line_num in line_numbers:

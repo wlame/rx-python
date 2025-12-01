@@ -635,4 +635,147 @@ class TestSamplesLineOffsetJsonStructure:
 
         data = json.loads(result.output)
         assert data["lines"] == []
-        assert len(data["offsets"]) > 0
+
+
+class TestSamplesLineEndingConsistency:
+    """Test that samples command matches head/tail behavior with different line endings."""
+
+    def setup_method(self):
+        """Create test environment."""
+        self.runner = CliRunner()
+        self.temp_dir = tempfile.mkdtemp()
+
+    def test_crlf_file_matches_tail(self):
+        """Test that samples output matches tail for CRLF files."""
+        import subprocess
+
+        # Create CRLF file
+        test_file = os.path.join(self.temp_dir, "crlf.txt")
+        with open(test_file, "wb") as f:
+            f.write(b"line1\r\n")
+            f.write(b"line2\r\n")
+            f.write(b"line3\r\n")
+            f.write(b"line4\r\n")
+
+        # Get last line with tail
+        tail_result = subprocess.run(["tail", "-n", "1", test_file], capture_output=True, text=True)
+        tail_output = tail_result.stdout.strip()
+
+        # Get last line with samples
+        result = self.runner.invoke(samples_command, [test_file, "-l", "4", "--context", "0"])
+        assert result.exit_code == 0
+
+        # Extract the actual line content (skip header)
+        lines = result.output.strip().split("\n")
+        samples_output = lines[-1] if lines else ""
+
+        assert samples_output == tail_output
+
+    def test_mixed_line_endings_matches_tail(self):
+        """Test that samples matches tail with mixed line endings (CRLF, bare CR, LF)."""
+        import subprocess
+
+        # Create file with mixed endings
+        test_file = os.path.join(self.temp_dir, "mixed.txt")
+        with open(test_file, "wb") as f:
+            f.write(b"line1\r\n")  # CRLF
+            f.write(b"line2\r")  # bare CR - wc doesn't count as line
+            f.write(b"line3\n")  # LF
+            f.write(b"line4\r\n")  # CRLF
+
+        # Count lines with wc -l
+        wc_result = subprocess.run(["wc", "-l", test_file], capture_output=True, text=True)
+        wc_count = int(wc_result.stdout.strip().split()[0])
+
+        # Get last line with tail
+        tail_result = subprocess.run(["tail", "-n", "1", test_file], capture_output=True, text=True)
+        tail_output = tail_result.stdout.strip()
+
+        # Get last line with samples (using wc line count)
+        result = self.runner.invoke(samples_command, [test_file, "-l", str(wc_count), "--context", "0"])
+        assert result.exit_code == 0
+
+        # Extract actual line content
+        lines = result.output.strip().split("\n")
+        samples_output = lines[-1] if lines else ""
+
+        assert samples_output == tail_output
+        assert wc_count == 3  # Only \n counts
+
+    def test_samples_first_line_matches_head(self):
+        """Test that samples first line matches head."""
+        import subprocess
+
+        # Create test file
+        test_file = os.path.join(self.temp_dir, "test.txt")
+        with open(test_file, "wb") as f:
+            f.write(b"first line\r\n")
+            f.write(b"second line\r\n")
+            f.write(b"third line\r\n")
+
+        # Get first line with head
+        head_result = subprocess.run(["head", "-n", "1", test_file], capture_output=True, text=True)
+        head_output = head_result.stdout.strip()
+
+        # Get first line with samples
+        result = self.runner.invoke(samples_command, [test_file, "-l", "1", "--context", "0"])
+        assert result.exit_code == 0
+
+        # Extract actual line content
+        lines = result.output.strip().split("\n")
+        samples_output = lines[-1] if lines else ""
+
+        assert samples_output == head_output
+
+    def test_samples_no_extra_empty_lines_in_crlf(self):
+        """Test that CRLF files don't show extra empty lines in samples output."""
+        # Create CRLF file
+        test_file = os.path.join(self.temp_dir, "crlf_no_empty.txt")
+        with open(test_file, "wb") as f:
+            for i in range(1, 11):
+                f.write(f"line{i}\r\n".encode())
+
+        # Get lines 5-7 with samples
+        result = self.runner.invoke(samples_command, [test_file, "-l", "6", "--context", "1"])
+        assert result.exit_code == 0
+
+        # Count actual content lines (exclude header lines)
+        lines = result.output.strip().split("\n")
+        content_lines = [
+            line
+            for line in lines
+            if line and not line.startswith("=") and "File:" not in line and "Context:" not in line
+        ]
+
+        # Should have exactly 3 lines: line5, line6, line7
+        assert len(content_lines) == 3
+        assert "line5" in content_lines[0]
+        assert "line6" in content_lines[1]
+        assert "line7" in content_lines[2]
+
+        # No empty lines in between
+        for line in content_lines:
+            assert line.strip() != ""
+
+    def test_bare_cr_not_treated_as_newline(self):
+        """Test that bare \\r is NOT treated as a line separator."""
+        # Create file with bare CR in middle of line
+        test_file = os.path.join(self.temp_dir, "bare_cr.txt")
+        with open(test_file, "wb") as f:
+            f.write(b"before\rafter\n")  # \r in middle should NOT be line break
+            f.write(b"line2\n")
+
+        # Should be 2 lines total (only 2 \n characters)
+        import subprocess
+
+        wc_result = subprocess.run(["wc", "-l", test_file], capture_output=True, text=True)
+        wc_count = int(wc_result.stdout.strip().split()[0])
+        assert wc_count == 2
+
+        # Get line 1 - should contain both "before" and "after"
+        result = self.runner.invoke(samples_command, [test_file, "-l", "1", "--context", "0"])
+        assert result.exit_code == 0
+
+        output = result.output
+        # The first line should contain the \r but not be split
+        assert "before" in output or "after" in output

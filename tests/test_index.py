@@ -131,13 +131,13 @@ class TestConfiguration:
         # Clear any env var
         os.environ.pop("RX_LARGE_TEXT_FILE_MB", None)
         threshold = get_large_file_threshold_bytes()
-        assert threshold == 100 * 1024 * 1024  # 100MB
+        assert threshold == 50 * 1024 * 1024  # 50MB
 
     def test_get_index_step_default(self):
         """Test default step is threshold/10 = 10MB."""
         os.environ.pop("RX_LARGE_TEXT_FILE_MB", None)
         step = get_index_step_bytes()
-        assert step == 10 * 1024 * 1024  # 10MB
+        assert step == 1 * 1024 * 1024  # 1MB
 
     def test_get_large_file_threshold_from_env(self):
         """Test threshold can be set via environment variable."""
@@ -153,7 +153,7 @@ class TestConfiguration:
         os.environ["RX_LARGE_TEXT_FILE_MB"] = "200"
         try:
             step = get_index_step_bytes()
-            assert step == 20 * 1024 * 1024  # 20MB (200/10)
+            assert step == 4 * 1024 * 1024  # 20MB (200/50)
         finally:
             os.environ.pop("RX_LARGE_TEXT_FILE_MB", None)
 
@@ -682,7 +682,7 @@ class TestThresholdBasedIndexing:
             assert threshold == 50 * 1024 * 1024  # 50MB
 
             step = get_index_step_bytes()
-            assert step == 5 * 1024 * 1024  # 5MB (50/10)
+            assert step == 1 * 1024 * 1024  # 1MB (50/50)
         finally:
             if old_value is None:
                 os.environ.pop("RX_LARGE_TEXT_FILE_MB", None)
@@ -697,8 +697,8 @@ class TestThresholdBasedIndexing:
                 os.environ["RX_LARGE_TEXT_FILE_MB"] = str(mb)
                 threshold = get_large_file_threshold_bytes()
                 step = get_index_step_bytes()
-                assert step == threshold // 10
-                assert step == mb * 1024 * 1024 // 10
+                assert step == threshold // 50
+                assert step == mb * 1024 * 1024 // 50
         finally:
             if old_value is None:
                 os.environ.pop("RX_LARGE_TEXT_FILE_MB", None)

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import random
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -21,6 +22,20 @@ from rx.regex import calculate_regex_complexity
 from rx.utils import NEWLINE_SYMBOL
 
 logger = logging.getLogger(__name__)
+
+
+def get_sample_size_lines() -> int:
+    """Get the sample size for line length statistics from environment variable.
+
+    Returns:
+        Sample size in number of lines. Default is 1,000,000.
+        Files with fewer non-empty lines than this will have exact statistics.
+    """
+    try:
+        return int(os.environ.get('RX_SAMPLE_SIZE_LINES', '1000000'))
+    except (ValueError, TypeError):
+        logger.warning("Invalid RX_SAMPLE_SIZE_LINES value, using default 1000000")
+        return 1000000
 
 
 def human_readable_size(size_bytes: int) -> str:
@@ -281,53 +296,113 @@ class FileAnalyzer:
             logger.warning(f"Failed to create index for {filepath}: {e}")
 
     def _analyze_text_file(self, filepath: str, result: FileAnalysisResult):
-        """Analyze text file content."""
+        """Analyze text file content using streaming to avoid loading entire file in memory."""
         try:
-            # Read raw bytes first to detect line endings
+            # Sample first chunk for line ending detection (up to 10MB)
+            SAMPLE_SIZE = 10 * 1024 * 1024
             with open(filepath, 'rb') as f:
-                raw_content = f.read()
+                sample = f.read(SAMPLE_SIZE)
 
-            # Detect line endings
-            result.line_ending = self._detect_line_ending(raw_content)
+            # Detect line endings from sample
+            result.line_ending = self._detect_line_ending(sample)
 
-            # Now read as text for line analysis
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-
-            # Basic line metrics
-            result.line_count = len(lines)
-
-            # Track byte offsets for each line
+            # Now process file line by line (streaming)
+            # Use reservoir sampling for percentiles to avoid storing all line lengths
+            # IMPORTANT: Use binary mode to count lines consistently with wc -l
+            # Text mode treats \r, \n, and \r\n all as line separators, which can
+            # double-count lines in files with CRLF that also have bare \r characters
+            empty_line_count = 0
             byte_offset = 0
-            line_data = []  # [(line_num, stripped_line, byte_offset), ...]
+            max_line_length = 0
+            max_line_number = 0
+            max_line_offset = 0
+            last_line_num = 0
 
-            for line_num, line in enumerate(lines, 1):
-                stripped = line.rstrip(NEWLINE_SYMBOL + '\r')
-                if line.strip():  # non-empty line
-                    line_data.append((line_num, stripped, byte_offset))
-                byte_offset += len(line.encode('utf-8'))
+            # Streaming statistics
+            total_length = 0
+            non_empty_count = 0
+            sum_of_squares = 0.0
 
-            result.empty_line_count = len(lines) - len(line_data)
+            # Reservoir sampling for percentiles
+            # Files with fewer non-empty lines will have exact statistics
+            sample_size = get_sample_size_lines()
+            line_length_sample = []
 
-            if line_data:
-                line_lengths = [len(stripped) for _, stripped, _ in line_data]
-                result.line_length_max = max(line_lengths)
-                result.line_length_avg = statistics.mean(line_lengths)
-                result.line_length_median = statistics.median(line_lengths)
+            # Use binary mode and split on \n to match wc -l behavior
+            with open(filepath, 'rb') as f:
+                for line_num, line_bytes in enumerate(f, 1):
+                    last_line_num = line_num
 
-                # Calculate percentiles
-                result.line_length_p95 = self._percentile(line_lengths, 95)
-                result.line_length_p99 = self._percentile(line_lengths, 99)
+                    # Decode line
+                    try:
+                        line = line_bytes.decode('utf-8', errors='ignore')
+                    except Exception:
+                        line = ''
 
-                # Find longest line info
-                max_idx = line_lengths.index(result.line_length_max)
-                result.line_length_max_line_number = line_data[max_idx][0]
-                result.line_length_max_byte_offset = line_data[max_idx][2]
+                    # Calculate byte offset
+                    line_byte_length = len(line_bytes)
 
-                if len(line_lengths) > 1:
-                    result.line_length_stddev = statistics.stdev(line_lengths)
+                    # Strip line ending for length calculation
+                    # Remove \n and \r from the end
+                    stripped = line.rstrip('\n\r')
+
+                    if stripped.strip():  # non-empty line
+                        line_len = len(stripped)
+                        non_empty_count += 1
+                        total_length += line_len
+                        sum_of_squares += line_len * line_len
+
+                        # Reservoir sampling: keep a random sample of line lengths
+                        if len(line_length_sample) < sample_size:
+                            line_length_sample.append(line_len)
+                        else:
+                            # Randomly replace an element with decreasing probability
+                            j = random.randint(0, non_empty_count - 1)
+                            if j < sample_size:
+                                line_length_sample[j] = line_len
+
+                        # Track longest line
+                        if line_len > max_line_length:
+                            max_line_length = line_len
+                            max_line_number = line_num
+                            max_line_offset = byte_offset
+                    else:
+                        empty_line_count += 1
+
+                    # Run line-level hooks on the fly
+                    for hook in self.line_hooks:
+                        try:
+                            hook(line, line_num, result)
+                        except Exception as e:
+                            logger.warning(f"Line hook {hook.__name__} failed at {filepath}:{line_num}: {e}")
+
+                    byte_offset += line_byte_length
+
+            # Set basic line metrics
+            result.line_count = last_line_num
+            result.empty_line_count = empty_line_count
+
+            # Calculate statistics from streaming data and sample
+            if non_empty_count > 0:
+                result.line_length_max = max_line_length
+                result.line_length_avg = total_length / non_empty_count
+                result.line_length_max_line_number = max_line_number
+                result.line_length_max_byte_offset = max_line_offset
+
+                # Calculate stddev from sum of squares
+                mean = result.line_length_avg
+                variance = (sum_of_squares / non_empty_count) - (mean * mean)
+                result.line_length_stddev = variance**0.5 if variance > 0 else 0.0
+
+                # Use sample for percentiles
+                if line_length_sample:
+                    result.line_length_median = statistics.median(line_length_sample)
+                    result.line_length_p95 = self._percentile(line_length_sample, 95)
+                    result.line_length_p99 = self._percentile(line_length_sample, 99)
                 else:
-                    result.line_length_stddev = 0.0
+                    result.line_length_median = 0.0
+                    result.line_length_p95 = 0.0
+                    result.line_length_p99 = 0.0
             else:
                 result.line_length_max = 0
                 result.line_length_avg = 0.0
@@ -335,14 +410,6 @@ class FileAnalyzer:
                 result.line_length_p95 = 0.0
                 result.line_length_p99 = 0.0
                 result.line_length_stddev = 0.0
-
-            # Run line-level hooks
-            for line_num, line in enumerate(lines, 1):
-                for hook in self.line_hooks:
-                    try:
-                        hook(line, line_num, result)
-                    except Exception as e:
-                        logger.warning(f"Line hook {hook.__name__} failed at {filepath}:{line_num}: {e}")
 
         except Exception as e:
             logger.error(f"Failed to analyze text content of {filepath}: {e}")

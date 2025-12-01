@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 INDEX_VERSION = 1
-DEFAULT_LARGE_FILE_MB = 100
+DEFAULT_LARGE_FILE_MB = 50
 CACHE_DIR_NAME = "rx/indexes"
 
 
@@ -59,10 +59,10 @@ def get_large_file_threshold_bytes() -> int:
 def get_index_step_bytes() -> int:
     """Get the index step size in bytes.
 
-    Step size is threshold / 10.
-    Default: 10MB (when threshold is 100MB)
+    Step size is threshold / 50.
+    Default: 1MB (when threshold is 100MB)
     """
-    return get_large_file_threshold_bytes() // 10
+    return get_large_file_threshold_bytes() // 50
 
 
 def get_index_path(source_path: str) -> Path:
