@@ -411,6 +411,20 @@ class FileAnalysisResult(BaseModel):
 
     custom_metrics: dict = Field(default_factory=dict, description="Custom metrics from plugins")
 
+    # Compression information
+    is_compressed: bool = Field(default=False, description="Whether the file is compressed")
+    compression_format: str | None = Field(None, description="Compression format (gzip, zstd, xz, bz2, etc.)")
+    is_seekable_zstd: bool = Field(default=False, description="Whether file is seekable zstd format")
+    compressed_size: int | None = Field(None, description="Compressed file size in bytes (if compressed)")
+    decompressed_size: int | None = Field(None, description="Decompressed/original size in bytes (if compressed)")
+    compression_ratio: float | None = Field(None, description="Compression ratio (if compressed)")
+
+    # Index information
+    has_index: bool = Field(default=False, description="Whether an index exists for this file")
+    index_path: str | None = Field(None, description="Path to index file (if exists)")
+    index_valid: bool = Field(default=False, description="Whether the index is valid (not stale)")
+    index_checkpoint_count: int | None = Field(None, description="Number of checkpoints in index (if exists)")
+
 
 class AnalyseResponse(BaseModel):
     """Response for file analysis endpoint."""
@@ -462,6 +476,27 @@ class AnalyseResponse(BaseModel):
                 lines.append(f"  Permissions: {result.permissions}")
             if result.owner:
                 lines.append(f"  Owner: {result.owner}")
+
+            # Compression info
+            if result.is_compressed:
+                comp_info = f"  Compressed: {result.compression_format}"
+                if result.is_seekable_zstd:
+                    comp_info += " (seekable)"
+                if result.compression_ratio:
+                    comp_info += f", ratio: {result.compression_ratio:.2f}x"
+                if result.decompressed_size:
+                    decompressed_human = human_readable_size(result.decompressed_size)
+                    comp_info += f", decompressed: {decompressed_human}"
+                lines.append(comp_info)
+
+            # Index info
+            if result.has_index:
+                index_info = f"  Index: {'valid' if result.index_valid else 'stale'}"
+                if result.index_checkpoint_count:
+                    index_info += f", {result.index_checkpoint_count} checkpoints"
+                if result.index_path:
+                    index_info += f" ({result.index_path})"
+                lines.append(index_info)
 
             if result.is_text and result.line_count is not None:
                 lines.append(f"  Lines: {result.line_count:,} total, {result.empty_line_count:,} empty")
