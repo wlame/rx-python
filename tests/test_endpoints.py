@@ -58,18 +58,18 @@ Line 5: Hello again
 
 
 class TestHealthEndpoint:
-    """Tests for the health/root endpoint (now at /)"""
+    """Tests for the health endpoint (at /health)"""
 
     def test_health_returns_ok(self, client):
-        """Test root health endpoint returns ok status"""
-        response = client.get('/')
+        """Test health endpoint returns ok status"""
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert data['status'] == 'ok'
 
     def test_health_includes_ripgrep_status(self, client):
         """Test health endpoint includes ripgrep availability"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'ripgrep_available' in data
@@ -77,7 +77,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_app_version(self, client):
         """Test health endpoint includes app version"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'app_version' in data
@@ -86,7 +86,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_python_version(self, client):
         """Test health endpoint includes Python version"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'python_version' in data
@@ -95,7 +95,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_os_info(self, client):
         """Test health endpoint includes OS information"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'os_info' in data
@@ -107,7 +107,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_system_resources(self, client):
         """Test health endpoint includes system resources"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'system_resources' in data
@@ -122,7 +122,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_python_packages(self, client):
         """Test health endpoint includes Python package versions"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'python_packages' in data
@@ -133,7 +133,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_constants(self, client):
         """Test health endpoint includes application constants"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'constants' in data
@@ -155,7 +155,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_environment(self, client):
         """Test health endpoint includes environment variables"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'environment' in data
@@ -164,7 +164,7 @@ class TestHealthEndpoint:
 
     def test_health_includes_docs_url(self, client):
         """Test health endpoint includes documentation URL"""
-        response = client.get('/')
+        response = client.get('/health')
         assert response.status_code == 200
         data = response.json()
         assert 'docs_url' in data
@@ -299,13 +299,13 @@ class TestSamplesEndpoint:
         """Test that offsets and lines cannot be used together"""
         response = client.get('/v1/samples', params={'path': temp_test_file, 'offsets': '0', 'lines': '1'})
         assert response.status_code == 400
-        assert "cannot use both" in response.json()['detail'].lower()
+        assert 'cannot use both' in response.json()['detail'].lower()
 
     def test_samples_requires_offsets_or_lines(self, client, temp_test_file):
         """Test that either offsets or lines must be provided"""
         response = client.get('/v1/samples', params={'path': temp_test_file})
         assert response.status_code == 400
-        assert "must provide" in response.json()['detail'].lower()
+        assert 'must provide' in response.json()['detail'].lower()
 
     def test_samples_with_context(self, client, temp_test_file):
         """Test samples endpoint with context parameter"""
@@ -346,12 +346,12 @@ class TestSamplesEndpoint:
         assert response.status_code == 404
 
     def test_samples_line_beyond_file(self, client, temp_test_file):
-        """Test samples endpoint with line number beyond file"""
+        """Test samples endpoint with line number beyond file - should return 400 EOF error"""
         response = client.get('/v1/samples', params={'path': temp_test_file, 'lines': '999'})
-        assert response.status_code == 200
+        assert response.status_code == 400
         data = response.json()
-        # Should return empty samples for non-existent line
-        assert data['samples']['999'] == []
+        assert 'detail' in data
+        assert 'EOF reached' in data['detail'] or 'out of bounds' in data['detail']
 
     def test_samples_json_structure_with_lines(self, client, temp_test_file):
         """Test complete JSON structure when using lines"""

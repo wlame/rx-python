@@ -2,15 +2,19 @@ import asyncio
 import logging
 import os
 import platform
+import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
 from functools import partial
+from pathlib import Path
 from time import time
 
 import anyio
 import psutil
 import sh
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from rx import file_utils as file_utils_module
@@ -41,6 +45,8 @@ from rx.models import (
     TaskStatusResponse,
     TraceCompletePayload,
     TraceResponse,
+    TreeEntry,
+    TreeResponse,
 )
 from rx.path_security import (
     get_search_roots,
@@ -254,7 +260,7 @@ def get_app_env_variables() -> dict:
     return env_vars
 
 
-@app.get('/', tags=['General'])
+@app.get('/health', tags=['General'])
 async def health():
     """
     Health check and system introspection endpoint.
@@ -1364,3 +1370,290 @@ async def get_task_status(task_id: str):
         error=task.error,
         result=task.result,
     )
+
+
+# File Tree Endpoints
+
+
+def get_entry_metadata(entry_path: str, entry_name: str, is_dir: bool) -> dict:
+    """Get metadata for a file or directory entry.
+
+    Args:
+        entry_path: Full path to the entry
+        entry_name: Name of the entry
+        is_dir: Whether entry is a directory
+
+    Returns:
+        Dictionary with entry metadata
+    """
+    from rx.compression import detect_compression, is_compressed
+    from rx.file_utils import is_text_file
+    from rx.index import get_index_path, is_index_valid, load_index
+
+    result = {
+        'name': entry_name,
+        'path': entry_path,
+        'type': 'directory' if is_dir else 'file',
+        'size': None,
+        'size_human': None,
+        'modified_at': None,
+        'is_text': None,
+        'is_compressed': None,
+        'compression_format': None,
+        'is_indexed': None,
+        'line_count': None,
+        'children_count': None,
+    }
+
+    try:
+        stat_info = os.stat(entry_path)
+        mtime = datetime.fromtimestamp(stat_info.st_mtime)
+        result['modified_at'] = mtime.isoformat()
+
+        if is_dir:
+            # Count children for directories
+            try:
+                children = os.listdir(entry_path)
+                result['children_count'] = len(children)
+            except PermissionError:
+                result['children_count'] = None
+        else:
+            # File-specific metadata
+            file_size = stat_info.st_size
+            result['size'] = file_size
+            result['size_human'] = human_readable_size(file_size)
+
+            # Check if compressed
+            if is_compressed(entry_path):
+                result['is_compressed'] = True
+                compression_fmt = detect_compression(entry_path)
+                result['compression_format'] = compression_fmt.value if compression_fmt else None
+                # Compressed files are considered "text" for our purposes
+                result['is_text'] = True
+            else:
+                result['is_compressed'] = False
+                result['is_text'] = is_text_file(entry_path)
+
+            # Check index status
+            if is_index_valid(entry_path):
+                result['is_indexed'] = True
+                # Try to get line count from index
+                try:
+                    index_path = get_index_path(entry_path)
+                    index_data = load_index(index_path)
+                    if index_data and 'analysis' in index_data:
+                        result['line_count'] = index_data['analysis'].get('line_count')
+                except Exception:
+                    pass
+            else:
+                result['is_indexed'] = False
+
+    except (OSError, PermissionError) as e:
+        logger.debug(f'Error getting metadata for {entry_path}: {e}')
+
+    return result
+
+
+def human_readable_size(size_bytes: int) -> str:
+    """Convert bytes to human-readable format."""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024:
+            return f'{size_bytes:.2f} {unit}'
+        size_bytes /= 1024
+    return f'{size_bytes:.2f} PB'
+
+
+@app.get(
+    '/v1/tree',
+    tags=['FileTree'],
+    summary='List directory contents',
+    response_model=TreeResponse,
+    responses={
+        200: {'description': 'Directory listing retrieved'},
+        403: {'description': 'Path outside search roots'},
+        404: {'description': 'Path not found or not a directory'},
+    },
+)
+async def tree(
+    path: str | None = Query(
+        None,
+        description='Directory path to list. If not provided, lists search roots.',
+        examples=['/var/log'],
+    ),
+) -> TreeResponse:
+    """
+    List contents of a directory within the search roots.
+
+    If no path is provided, returns the list of configured search roots.
+
+    **Parameters:**
+    - **path**: Directory path to list (optional)
+
+    **Returns:**
+    - List of files and directories with metadata
+    - File properties include: size, type (text/binary), compression, index status
+    - Directory properties include: children count
+
+    **Examples:**
+    ```
+    GET /v1/tree                    # List search roots
+    GET /v1/tree?path=/var/log      # List /var/log contents
+    ```
+    """
+    from rx.models import TreeResponse
+
+    # If no path, return search roots
+    if path is None:
+        search_roots = get_search_roots()
+
+        if not search_roots:
+            prom.record_http_response('GET', '/v1/tree', 200)
+            return TreeResponse(
+                path='/',
+                parent=None,
+                is_search_root=True,
+                entries=[],
+                total_entries=0,
+            )
+
+        # Get metadata for each search root
+        entries = []
+        for root in search_roots:
+            root_str = str(root)
+            metadata = await anyio.to_thread.run_sync(get_entry_metadata, root_str, root.name, True)
+            entries.append(TreeEntry(**metadata))
+
+        prom.record_http_response('GET', '/v1/tree', 200)
+        return TreeResponse(
+            path='/',
+            parent=None,
+            is_search_root=True,
+            entries=entries,
+            total_entries=len(entries),
+        )
+
+    # Validate path is within search roots
+    try:
+        validated_path = validate_path_within_root(path)
+        path = str(validated_path)
+    except PermissionError as e:
+        prom.record_error('access_denied')
+        prom.record_http_response('GET', '/v1/tree', 403)
+        raise HTTPException(status_code=403, detail=str(e))
+
+    # Check path exists and is a directory
+    if not os.path.exists(path):
+        prom.record_error('not_found')
+        prom.record_http_response('GET', '/v1/tree', 404)
+        raise HTTPException(status_code=404, detail=f'Path not found: {path}')
+
+    if not os.path.isdir(path):
+        prom.record_error('not_a_directory')
+        prom.record_http_response('GET', '/v1/tree', 400)
+        raise HTTPException(status_code=400, detail=f'Path is not a directory: {path}')
+
+    # List directory contents
+    try:
+        dir_entries = os.listdir(path)
+    except PermissionError:
+        prom.record_error('access_denied')
+        prom.record_http_response('GET', '/v1/tree', 403)
+        raise HTTPException(status_code=403, detail=f'Permission denied: {path}')
+
+    # Sort entries: directories first, then files, alphabetically within each group
+    dirs = []
+    files = []
+    for entry_name in dir_entries:
+        entry_path = os.path.join(path, entry_name)
+        if os.path.isdir(entry_path):
+            dirs.append((entry_name, entry_path, True))
+        else:
+            files.append((entry_name, entry_path, False))
+
+    dirs.sort(key=lambda x: x[0].lower())
+    files.sort(key=lambda x: x[0].lower())
+    sorted_entries = dirs + files
+
+    # Get metadata for each entry (in parallel for performance)
+    entries = []
+    total_size = 0
+
+    for entry_name, entry_path, is_dir in sorted_entries:
+        metadata = await anyio.to_thread.run_sync(get_entry_metadata, entry_path, entry_name, is_dir)
+        entries.append(TreeEntry(**metadata))
+        if metadata.get('size'):
+            total_size += metadata['size']
+
+    # Determine parent path
+    path_obj = Path(path)
+    search_roots = get_search_roots()
+    is_search_root = path_obj in search_roots
+
+    if is_search_root:
+        parent = None
+    else:
+        parent = str(path_obj.parent)
+
+    prom.record_http_response('GET', '/v1/tree', 200)
+    return TreeResponse(
+        path=path,
+        parent=parent,
+        is_search_root=is_search_root,
+        entries=entries,
+        total_entries=len(entries),
+        total_size=total_size if total_size > 0 else None,
+        total_size_human=human_readable_size(total_size) if total_size > 0 else None,
+    )
+
+
+# Static file serving for frontend
+# Serve static assets (JS, CSS, etc.) from the built frontend
+# Support both development mode and PyInstaller bundled mode
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # Running in PyInstaller bundle
+    static_dir = Path(sys._MEIPASS) / 'rx' / 'frontend' / 'dist'
+    logger.info(f'PyInstaller mode: static_dir = {static_dir}')
+    logger.info(f'_MEIPASS = {sys._MEIPASS}')
+else:
+    # Running in development mode
+    static_dir = Path(__file__).parent / 'frontend' / 'dist'
+    logger.info(f'Development mode: static_dir = {static_dir}')
+
+logger.info(f'Static dir exists: {static_dir.exists()}')
+if static_dir.exists():
+    logger.info(f'Static dir contents: {list(static_dir.iterdir())}')
+if static_dir.exists():
+    # Mount static files (assets like JS, CSS)
+    app.mount('/assets', StaticFiles(directory=str(static_dir / 'assets')), name='assets')
+
+    # Serve index.html at root
+    @app.get('/', include_in_schema=False)
+    async def serve_frontend():
+        """Serve the frontend index.html"""
+        index_path = static_dir / 'index.html'
+        if index_path.exists():
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail='Frontend not built. Run: make frontend-build')
+
+    # Catch-all route for SPA (must be last)
+    @app.get('/{full_path:path}', include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Serve SPA for client-side routing (catch-all for non-API routes)"""
+        # Don't catch API routes or special paths
+        if full_path.startswith(('v1/', 'health', 'metrics', 'docs', 'redoc', 'openapi.json')):
+            raise HTTPException(status_code=404, detail=f'Not found: /{full_path}')
+
+        # Try to serve static file first
+        file_path = static_dir / full_path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(file_path)
+
+        # Fall back to index.html for SPA routing
+        index_path = static_dir / 'index.html'
+        if index_path.exists():
+            return FileResponse(index_path)
+
+        raise HTTPException(status_code=404, detail='Frontend not built. Run: make frontend-build')
+else:
+    logger.warning(f'Frontend directory not found: {static_dir}. Frontend will not be served.')
+    logger.warning('Build the frontend with: make frontend-build')

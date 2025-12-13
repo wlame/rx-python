@@ -4,12 +4,29 @@ PyInstaller spec file for RX Tracer
 """
 
 import sys
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
-# Collect data files if needed
+# Collect frontend dist files
+frontend_dist = Path('src/rx/frontend/dist')
 datas = []
+
+if frontend_dist.exists():
+    # Add all files and subdirectories from frontend/dist to the bundle
+    # Need to add the directory and its contents recursively
+    for item in frontend_dist.rglob('*'):
+        if item.is_file():
+            # Get relative path from frontend/dist
+            rel_path = item.relative_to(frontend_dist.parent)
+            dest_path = f'rx/frontend/{rel_path.parent}'
+            datas.append((str(item), dest_path))
+
+    print(f"[OK] Including {len(datas)} frontend files from {frontend_dist}")
+else:
+    print(f"[WARN] Frontend dist not found at {frontend_dist}")
+    print("  Run: make frontend-build")
 
 # Hidden imports that PyInstaller might miss
 hiddenimports = [

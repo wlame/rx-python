@@ -796,13 +796,9 @@ def get_context_by_lines(
     max_line_length = LINE_SIZE_ASSUMPTION_KB * 1024
 
     for target_line in line_numbers:
-        if target_line < 1:
-            result[target_line] = []
-            continue
-
-        if total_lines > 0 and target_line > total_lines:
-            result[target_line] = []
-            continue
+        # Validate line number is within file bounds
+        if target_line < 1 or (total_lines > 0 and target_line > total_lines):
+            raise ValueError(f'Line {target_line} is out of bounds. File has {total_lines} lines (EOF reached).')
 
         # Find the closest indexed position before our target
         start_line_needed = max(1, target_line - before_context)
@@ -906,7 +902,7 @@ def get_context_by_lines(
         else:
             # Didn't read enough lines
             logger.warning(
-                f"Didn't read enough lines for line {target_line} (read {lines_from_indexed}, needed {target_offset_in_chunk + after_context + 1})"
+                f"Didn't read enough lines for line {target_line}, read {lines_from_indexed}, needed {target_offset_in_chunk + after_context + 1})"
             )
             result[target_line] = []
 
@@ -949,9 +945,9 @@ def _get_context_by_lines_simple(
     total_lines = len(all_lines)
 
     for target_line in line_numbers:
+        # Validate line number is within file bounds
         if target_line < 1 or target_line > total_lines:
-            result[target_line] = []
-            continue
+            raise ValueError(f'Line {target_line} is out of bounds. File has {total_lines} lines (EOF reached).')
 
         # Convert to 0-based index
         target_idx = target_line - 1
@@ -1009,8 +1005,7 @@ def get_context_from_seekable_zstd(
 
     for line_num in line_numbers:
         if line_num < 1 or line_num > index.total_lines:
-            result[line_num] = []
-            continue
+            raise ValueError(f'Line {line_num} is out of bounds. File has {index.total_lines} lines (EOF reached).')
 
         # Find which frame contains this line
         frame_idx = find_frame_for_line(index, line_num)

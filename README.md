@@ -382,6 +382,33 @@ curl -X POST "http://localhost:8000/v1/compress" \
 - **Streaming API** - WebSocket endpoint for real-time results
 - **Compression Streaming** - Stream compressed output without decompression
 
+## Web Frontend
+
+RX includes a web-based file viewer with advanced navigation and analysis capabilities:
+
+```bash
+# Start server with web UI
+rx serve --port=8000
+
+# Open browser to http://localhost:8000
+```
+
+**Frontend Features:**
+
+• **Multi-file viewer with tabs** - View multiple files simultaneously with tab management and drag-and-drop reordering
+
+• **Advanced search capabilities** - In-file text search with match highlighting and navigation; global trace search across configured roots with regex support
+
+• **Syntax highlighting and filtering** - Toggle-able syntax highlighting; regex-based content filtering with hide/show/highlight modes
+
+• **Invisible characters display mode** - Toggle to visualize spaces (·), tabs (→), carriage returns (⏎), non-breaking spaces (°), and zero-width characters (|)
+
+• **Virtual scrolling for large files** - Efficient on-demand content loading with adjustable lines per page; support for compressed files (gz, zst, xz, bz2)
+
+• **File tree browser with analysis** - Hierarchical directory navigation with context actions to analyze file statistics and create line-offset indexes
+
+• **Theme support and customization** - Light/dark/system themes; configurable font size, line numbers, and keyboard shortcuts
+
 ## Development
 
 ```bash
@@ -394,6 +421,9 @@ uv run pytest --cov=rx --cov-report=html
 # Build binary
 uv sync --group build
 ./build.sh
+
+# Build frontend
+make frontend-build
 ```
 
 ## License

@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply m-0 min-h-screen overflow-hidden;
+    @apply text-gh-fg-default dark:text-gh-fg-dark-default;
+    @apply bg-gh-canvas-default dark:bg-gh-canvas-dark-default;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gh-border-default dark:bg-gh-border-dark-default rounded;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gh-fg-subtle dark:bg-gh-fg-dark-subtle;
+  }
+
+  /* Selection styling */
+  ::selection {
+    @apply bg-gh-accent-muted dark:bg-gh-accent-dark-muted;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-3 py-1.5 rounded-md text-sm font-medium;
+    @apply transition-colors duration-150;
+    @apply focus:outline-none focus:ring-2 focus:ring-offset-2;
+  }
+
+  .btn-primary {
+    @apply bg-gh-accent-emphasis text-white;
+    @apply hover:bg-gh-accent-fg;
+    @apply dark:bg-gh-accent-dark-emphasis dark:hover:bg-gh-accent-dark-fg;
+    @apply focus:ring-gh-accent-emphasis dark:focus:ring-gh-accent-dark-emphasis;
+  }
+
+  .btn-secondary {
+    @apply bg-gh-canvas-subtle text-gh-fg-default;
+    @apply border border-gh-border-default;
+    @apply hover:bg-gh-canvas-inset;
+    @apply dark:bg-gh-canvas-dark-subtle dark:text-gh-fg-dark-default;
+    @apply dark:border-gh-border-dark-default dark:hover:bg-gh-canvas-dark-inset;
+  }
+
+  .input {
+    @apply px-3 py-1.5 rounded-md text-sm;
+    @apply bg-gh-canvas-default dark:bg-gh-canvas-dark-default;
+    @apply border border-gh-border-default dark:border-gh-border-dark-default;
+    @apply text-gh-fg-default dark:text-gh-fg-dark-default;
+    @apply placeholder:text-gh-fg-subtle dark:placeholder:text-gh-fg-dark-subtle;
+    @apply focus:outline-none focus:ring-2 focus:ring-gh-accent-emphasis dark:focus:ring-gh-accent-dark-emphasis;
+    @apply focus:border-gh-accent-emphasis dark:focus:border-gh-accent-dark-emphasis;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+
+  .badge-success {
+    @apply bg-gh-success-emphasis/10 text-gh-success-fg;
+    @apply dark:bg-gh-success-dark-emphasis/20 dark:text-gh-success-dark-fg;
+  }
+
+  .badge-warning {
+    @apply bg-gh-attention-emphasis/10 text-gh-attention-fg;
+    @apply dark:bg-gh-attention-dark-emphasis/20 dark:text-gh-attention-dark-fg;
+  }
+
+  .badge-info {
+    @apply bg-gh-accent-emphasis/10 text-gh-accent-fg;
+    @apply dark:bg-gh-accent-dark-emphasis/20 dark:text-gh-accent-dark-fg;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}

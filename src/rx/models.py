@@ -1018,3 +1018,46 @@ class TaskStatusResponse(BaseModel):
     completed_at: str | None = Field(None, description='ISO timestamp when task completed')
     error: str | None = Field(None, description='Error message if failed')
     result: dict | None = Field(None, description='Task result if completed')
+
+
+# File Tree Models
+
+
+class TreeEntry(BaseModel):
+    """A single entry (file or directory) in the file tree."""
+
+    name: str = Field(..., description='File or directory name')
+    path: str = Field(..., description='Full absolute path')
+    type: str = Field(..., description="Entry type: 'file' or 'directory'")
+    size: int | None = Field(None, description='File size in bytes (null for directories)')
+    size_human: str | None = Field(None, description='Human-readable file size')
+    modified_at: str | None = Field(None, description='Last modification time (ISO format)')
+
+    # File-specific properties (null for directories)
+    is_text: bool | None = Field(None, description='Whether file is text (vs binary)')
+    is_compressed: bool | None = Field(None, description='Whether file is compressed')
+    compression_format: str | None = Field(None, description='Compression format if compressed')
+    is_indexed: bool | None = Field(None, description='Whether file has a valid index')
+    line_count: int | None = Field(None, description='Number of lines (if indexed)')
+
+    # Directory-specific properties (null for files)
+    children_count: int | None = Field(None, description='Number of direct children (for directories)')
+
+
+class TreeResponse(BaseModel):
+    """Response for directory tree listing."""
+
+    path: str = Field(..., description='The listed directory path')
+    parent: str | None = Field(None, description='Parent directory path (null for search roots)')
+    is_search_root: bool = Field(default=False, description='Whether this is a search root directory')
+    entries: list[TreeEntry] = Field(default_factory=list, description='Directory entries')
+    total_entries: int = Field(default=0, description='Total number of entries')
+    total_size: int | None = Field(None, description='Total size of all files in bytes')
+    total_size_human: str | None = Field(None, description='Human-readable total size')
+
+
+class SearchRootsResponse(BaseModel):
+    """Response listing all configured search roots."""
+
+    roots: list[TreeEntry] = Field(..., description='List of search root directories')
+    total_roots: int = Field(..., description='Number of configured search roots')

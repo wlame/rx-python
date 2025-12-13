@@ -235,9 +235,9 @@ class FileAnalyzer:
     def _add_index_info(self, filepath: str, result: FileAnalysisState):
         """Add index information to analysis result."""
         try:
-            if seekable_zstd.seekable_zstd.is_seekable_zstd(filepath):
+            if seekable_zstd.is_seekable_zstd(filepath):
                 # Check for seekable zstd index
-                index_path = seekable_index.index.get_index_path(filepath)
+                index_path = seekable_index.get_index_path(filepath)
                 if os.path.exists(index_path):
                     result.has_index = True
                     result.index_path = str(index_path)
@@ -251,7 +251,7 @@ class FileAnalyzer:
                             logger.warning(f'Failed to load seekable index: {e}')
             else:
                 # Check for regular file index
-                index_path = index.index.get_index_path(filepath)
+                index_path = index.get_index_path(filepath)
                 if os.path.exists(str(index_path)):
                     result.has_index = True
                     result.index_path = str(index_path)

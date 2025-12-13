@@ -99,7 +99,7 @@ def temp_directory(temp_root):
     # Create a text file in the directory
     text_file = os.path.join(temp_dir, 'test.txt')
     with open(text_file, 'w') as f:
-        f.write("Test content\n")
+        f.write('Test content\n')
 
     # Create a binary file in the directory
     binary_file = os.path.join(temp_dir, 'test.bin')
@@ -119,28 +119,28 @@ class TestHumanReadableSize:
 
     def test_bytes(self):
         """Test bytes formatting"""
-        assert human_readable_size(0) == "0.00 B"
-        assert human_readable_size(512) == "512.00 B"
-        assert human_readable_size(1023) == "1023.00 B"
+        assert human_readable_size(0) == '0.00 B'
+        assert human_readable_size(512) == '512.00 B'
+        assert human_readable_size(1023) == '1023.00 B'
 
     def test_kilobytes(self):
         """Test kilobytes formatting"""
-        assert human_readable_size(1024) == "1.00 KB"
-        assert human_readable_size(2048) == "2.00 KB"
-        assert human_readable_size(1536) == "1.50 KB"
+        assert human_readable_size(1024) == '1.00 KB'
+        assert human_readable_size(2048) == '2.00 KB'
+        assert human_readable_size(1536) == '1.50 KB'
 
     def test_megabytes(self):
         """Test megabytes formatting"""
-        assert human_readable_size(1024 * 1024) == "1.00 MB"
-        assert human_readable_size(1024 * 1024 * 5) == "5.00 MB"
+        assert human_readable_size(1024 * 1024) == '1.00 MB'
+        assert human_readable_size(1024 * 1024 * 5) == '5.00 MB'
 
     def test_gigabytes(self):
         """Test gigabytes formatting"""
-        assert human_readable_size(1024 * 1024 * 1024) == "1.00 GB"
+        assert human_readable_size(1024 * 1024 * 1024) == '1.00 GB'
 
     def test_terabytes(self):
         """Test terabytes formatting"""
-        assert human_readable_size(1024 * 1024 * 1024 * 1024) == "1.00 TB"
+        assert human_readable_size(1024 * 1024 * 1024 * 1024) == '1.00 TB'
 
 
 class TestFileAnalyzer:
@@ -149,9 +149,9 @@ class TestFileAnalyzer:
     def test_analyze_text_file(self, temp_text_file):
         """Test analyzing a text file"""
         analyzer = FileAnalyzer()
-        result = analyzer.analyze_file(temp_text_file, "f1")
+        result = analyzer.analyze_file(temp_text_file, 'f1')
 
-        assert result.file_id == "f1"
+        assert result.file_id == 'f1'
         assert result.filepath == temp_text_file
         assert result.is_text is True
         assert result.size_bytes > 0
@@ -170,9 +170,9 @@ class TestFileAnalyzer:
     def test_analyze_empty_file(self, temp_empty_file):
         """Test analyzing an empty file"""
         analyzer = FileAnalyzer()
-        result = analyzer.analyze_file(temp_empty_file, "f1")
+        result = analyzer.analyze_file(temp_empty_file, 'f1')
 
-        assert result.file_id == "f1"
+        assert result.file_id == 'f1'
         assert result.is_text is True
         assert result.size_bytes == 0
         assert result.line_count == 0
@@ -188,9 +188,9 @@ class TestFileAnalyzer:
     def test_analyze_binary_file(self, temp_binary_file):
         """Test analyzing a binary file"""
         analyzer = FileAnalyzer()
-        result = analyzer.analyze_file(temp_binary_file, "f1")
+        result = analyzer.analyze_file(temp_binary_file, 'f1')
 
-        assert result.file_id == "f1"
+        assert result.file_id == 'f1'
         assert result.is_text is False
         assert result.size_bytes > 0
         # Text metrics should be None for binary files
@@ -208,7 +208,7 @@ class TestFileAnalyzer:
                 result.custom_metrics['hook_executed'] = True
 
         analyzer = CustomAnalyzer()
-        result = analyzer.analyze_file(temp_text_file, "f1")
+        result = analyzer.analyze_file(temp_text_file, 'f1')
 
         assert len(hook_called) == 1
         assert hook_called[0] == temp_text_file
@@ -223,7 +223,7 @@ class TestFileAnalyzer:
                 lines_processed.append((line_num, len(line)))
 
         analyzer = CustomAnalyzer()
-        result = analyzer.analyze_file(temp_text_file, "f1")
+        result = analyzer.analyze_file(temp_text_file, 'f1')
 
         assert len(lines_processed) == 5  # 5 lines in file
         assert lines_processed[0][0] == 1  # First line number
@@ -238,7 +238,7 @@ class TestFileAnalyzer:
                 result.custom_metrics['post_processed'] = result.line_count
 
         analyzer = CustomAnalyzer()
-        result = analyzer.analyze_file(temp_text_file, "f1")
+        result = analyzer.analyze_file(temp_text_file, 'f1')
 
         assert len(post_hook_called) == 1
         assert result.custom_metrics.get('post_processed') == result.line_count
@@ -258,7 +258,7 @@ class TestFileAnalyzer:
                 execution_order.append('post')
 
         analyzer = CustomAnalyzer()
-        result = analyzer.analyze_file(temp_text_file, "f1")
+        result = analyzer.analyze_file(temp_text_file, 'f1')
 
         # File hook should run first, then line hooks, then post hook
         assert execution_order[0] == 'file'
@@ -268,7 +268,7 @@ class TestFileAnalyzer:
     def test_metadata_fields(self, temp_text_file):
         """Test that metadata fields are populated"""
         analyzer = FileAnalyzer()
-        result = analyzer.analyze_file(temp_text_file, "f1")
+        result = analyzer.analyze_file(temp_text_file, 'f1')
 
         # These should be populated for all files
         assert result.created_at is not None
@@ -497,14 +497,14 @@ class TestAnalyseModels:
     def test_file_analysis_result_model(self):
         """Test FileAnalysisResult model creation"""
         result = FileAnalysisResult(
-            file="f1",
+            file='f1',
             size_bytes=1024,
-            size_human="1.00 KB",
+            size_human='1.00 KB',
             is_text=True,
-            created_at="2024-01-01T00:00:00",
-            modified_at="2024-01-01T00:00:00",
-            permissions="0644",
-            owner="user",
+            created_at='2024-01-01T00:00:00',
+            modified_at='2024-01-01T00:00:00',
+            permissions='0644',
+            owner='user',
             line_count=10,
             empty_line_count=2,
             line_length_max=80,
@@ -515,35 +515,35 @@ class TestAnalyseModels:
             line_length_stddev=10.2,
             line_length_max_line_number=5,
             line_length_max_byte_offset=100,
-            line_ending="LF",
+            line_ending='LF',
             custom_metrics={},
         )
 
-        assert result.file == "f1"
+        assert result.file == 'f1'
         assert result.size_bytes == 1024
         assert result.is_text is True
         assert result.line_length_max == 80
         assert result.line_length_p95 == 75.0
         assert result.line_length_p99 == 79.0
         assert result.line_length_max_line_number == 5
-        assert result.line_ending == "LF"
+        assert result.line_ending == 'LF'
 
     def test_analyse_response_model(self):
         """Test AnalyseResponse model creation"""
         response = AnalyseResponse(
-            path="/tmp/test",
+            path='/tmp/test',
             time=0.123,
-            files={"f1": "/tmp/test/file.txt"},
+            files={'f1': '/tmp/test/file.txt'},
             results=[
                 FileAnalysisResult(
-                    file="f1",
+                    file='f1',
                     size_bytes=100,
-                    size_human="100.00 B",
+                    size_human='100.00 B',
                     is_text=True,
-                    created_at="2024-01-01T00:00:00",
-                    modified_at="2024-01-01T00:00:00",
-                    permissions="0644",
-                    owner="user",
+                    created_at='2024-01-01T00:00:00',
+                    modified_at='2024-01-01T00:00:00',
+                    permissions='0644',
+                    owner='user',
                     line_count=5,
                     empty_line_count=0,
                     line_length_max=20,
@@ -554,33 +554,33 @@ class TestAnalyseModels:
                     line_length_stddev=2.5,
                     line_length_max_line_number=2,
                     line_length_max_byte_offset=50,
-                    line_ending="LF",
+                    line_ending='LF',
                 )
             ],
-            scanned_files=["/tmp/test/file.txt"],
+            scanned_files=['/tmp/test/file.txt'],
             skipped_files=[],
         )
 
-        assert response.path == "/tmp/test"
+        assert response.path == '/tmp/test'
         assert len(response.results) == 1
         assert len(response.files) == 1
 
     def test_analyse_response_to_cli(self):
         """Test AnalyseResponse.to_cli() method"""
         response = AnalyseResponse(
-            path="/tmp/test",
+            path='/tmp/test',
             time=0.123,
-            files={"f1": "/tmp/test/file.txt"},
+            files={'f1': '/tmp/test/file.txt'},
             results=[
                 FileAnalysisResult(
-                    file="f1",
+                    file='f1',
                     size_bytes=100,
-                    size_human="100.00 B",
+                    size_human='100.00 B',
                     is_text=True,
-                    created_at="2024-01-01T00:00:00",
-                    modified_at="2024-01-01T00:00:00",
-                    permissions="0644",
-                    owner="user",
+                    created_at='2024-01-01T00:00:00',
+                    modified_at='2024-01-01T00:00:00',
+                    permissions='0644',
+                    owner='user',
                     line_count=5,
                     empty_line_count=0,
                     line_length_max=20,
@@ -591,10 +591,10 @@ class TestAnalyseModels:
                     line_length_stddev=2.5,
                     line_length_max_line_number=2,
                     line_length_max_byte_offset=50,
-                    line_ending="LF",
+                    line_ending='LF',
                 )
             ],
-            scanned_files=["/tmp/test/file.txt"],
+            scanned_files=['/tmp/test/file.txt'],
             skipped_files=[],
         )
 
@@ -603,14 +603,118 @@ class TestAnalyseModels:
         assert isinstance(output, str)
         assert len(output) > 0
         # Verify new fields are in output
-        assert "p95=" in output
-        assert "p99=" in output
-        assert "Line ending: LF" in output
-        assert "Longest line:" in output
+        assert 'p95=' in output
+        assert 'p99=' in output
+        assert 'Line ending: LF' in output
+        assert 'Longest line:' in output
 
         # Test with colors
         colored_output = response.to_cli(colorize=True)
         assert isinstance(colored_output, str)
+
+
+class TestAddIndexInfo:
+    """Tests for _add_index_info method to prevent regression of module attribute issues"""
+
+    def test_add_index_info_no_attribute_error(self, temp_text_file):
+        """Test that _add_index_info doesn't raise AttributeError on module access
+
+        This is a regression test for the bug where code incorrectly accessed:
+        - seekable_zstd.seekable_zstd.is_seekable_zstd (wrong)
+        - seekable_index.index.get_index_path (wrong)
+        - index.index.get_index_path (wrong)
+
+        Instead of the correct:
+        - seekable_zstd.is_seekable_zstd (correct)
+        - seekable_index.get_index_path (correct)
+        - index.get_index_path (correct)
+        """
+        from rx.analyse import FileAnalysisState
+
+        analyzer = FileAnalyzer()
+        result = FileAnalysisState(
+            file_id='f1',
+            filepath=temp_text_file,
+            size_bytes=100,
+            size_human='100 B',
+            is_text=True,
+        )
+
+        # This should not raise AttributeError
+        try:
+            analyzer._add_index_info(temp_text_file, result)
+        except AttributeError as e:
+            # If we get AttributeError with the old wrong pattern, fail
+            if "has no attribute 'seekable_zstd'" in str(e) or "has no attribute 'index'" in str(e):
+                pytest.fail(f'Module attribute access error (regression): {e}')
+            raise
+
+        # Should complete without error
+        # Result may or may not have index info depending on whether index exists
+        assert hasattr(result, 'has_index')
+        assert hasattr(result, 'index_path')
+        assert hasattr(result, 'index_valid')
+
+    def test_add_index_info_with_seekable_zstd(self, temp_root):
+        """Test _add_index_info with a seekable zstd file (if available)"""
+        from rx.analyse import FileAnalysisState
+
+        # Create a mock .zst file (not actually seekable, just for testing path)
+        zst_path = os.path.join(temp_root, 'test.zst')
+        with open(zst_path, 'wb') as f:
+            f.write(b'\x28\xb5\x2f\xfd')  # zstd magic number
+
+        try:
+            analyzer = FileAnalyzer()
+            result = FileAnalysisState(
+                file_id='f1',
+                filepath=zst_path,
+                size_bytes=100,
+                size_human='100 B',
+                is_text=False,
+                is_compressed=True,
+                compression_format='zstd',
+            )
+
+            # Should not raise AttributeError even with .zst file
+            try:
+                analyzer._add_index_info(zst_path, result)
+            except AttributeError as e:
+                if "has no attribute 'seekable_zstd'" in str(e) or "has no attribute 'index'" in str(e):
+                    pytest.fail(f'Module attribute access error (regression): {e}')
+                raise
+
+            # Should complete without error
+            assert hasattr(result, 'has_index')
+        finally:
+            if os.path.exists(zst_path):
+                os.unlink(zst_path)
+
+    def test_add_index_info_modules_imported_correctly(self):
+        """Verify that analyse module imports are correct"""
+        from rx import analyse
+
+        # Verify modules are imported at the top level
+        assert hasattr(analyse, 'index')
+        assert hasattr(analyse, 'seekable_index')
+        assert hasattr(analyse, 'seekable_zstd')
+
+        # Verify these are modules, not nested attributes
+        import types
+
+        assert isinstance(analyse.index, types.ModuleType)
+        assert isinstance(analyse.seekable_index, types.ModuleType)
+        assert isinstance(analyse.seekable_zstd, types.ModuleType)
+
+        # Verify the functions exist on the modules directly
+        assert hasattr(analyse.index, 'get_index_path')
+        assert hasattr(analyse.seekable_index, 'get_index_path')
+        assert hasattr(analyse.seekable_zstd, 'is_seekable_zstd')
+
+        # Verify they are callable
+        assert callable(analyse.index.get_index_path)
+        assert callable(analyse.seekable_index.get_index_path)
+        assert callable(analyse.seekable_zstd.is_seekable_zstd)
 
 
 class TestReservoirSampling:
@@ -670,7 +774,7 @@ class TestReservoirSampling:
             os.environ['RX_SAMPLE_SIZE_LINES'] = '1000000'  # Much larger than file
 
             analyzer = FileAnalyzer()
-            result = analyzer.analyze_file(temp_path, "f1")
+            result = analyzer.analyze_file(temp_path, 'f1')
 
             # With 50 lines of length 10 and 50 of length 20:
             # avg = (50*10 + 50*20) / 100 = 1500 / 100 = 15.0
@@ -703,7 +807,7 @@ class TestReservoirSampling:
             os.environ['RX_SAMPLE_SIZE_LINES'] = '50'  # Much smaller than file
 
             analyzer = FileAnalyzer()
-            result = analyzer.analyze_file(temp_path, "f1")
+            result = analyzer.analyze_file(temp_path, 'f1')
 
             # Even with sampling, these should be accurate:
             assert result.line_count == 200  # Total count always exact
@@ -741,7 +845,7 @@ class TestReservoirSampling:
             os.environ['RX_SAMPLE_SIZE_LINES'] = '10'  # Very small sample
 
             analyzer = FileAnalyzer()
-            result = analyzer.analyze_file(temp_path, "f1")
+            result = analyzer.analyze_file(temp_path, 'f1')
 
             # Empty lines should be counted exactly
             assert result.line_count == 110
@@ -768,7 +872,7 @@ class TestReservoirSampling:
             os.environ['RX_SAMPLE_SIZE_LINES'] = '50'  # Smaller than total lines
 
             analyzer = FileAnalyzer()
-            result = analyzer.analyze_file(temp_path, "f1")
+            result = analyzer.analyze_file(temp_path, 'f1')
 
             # Longest line should always be found
             assert result.line_length_max == 500
@@ -801,7 +905,7 @@ class TestReservoirSampling:
 
             # Analyze with our code
             analyzer = FileAnalyzer()
-            analysis = analyzer.analyze_file(temp_path, "f1")
+            analysis = analyzer.analyze_file(temp_path, 'f1')
 
             # Our count should match wc -l
             assert analysis.line_count == wc_count
@@ -821,7 +925,7 @@ class TestReservoirSampling:
 
         try:
             analyzer = FileAnalyzer()
-            result = analyzer.analyze_file(temp_path, "f1")
+            result = analyzer.analyze_file(temp_path, 'f1')
 
             # Should count 3 lines
             assert result.line_count == 3
