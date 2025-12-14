@@ -42,6 +42,29 @@ rx = "rx.cli.main:cli"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+# Don't respect .gitignore for frontend/dist since we need it in the package
+ignore-vcs = true
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/rx/**",
+    "README.md",
+    "pyproject.toml",
+]
+exclude = [
+    "src/rx/frontend/node_modules/**",
+    "src/rx/frontend/src/**",
+    "src/rx/frontend/public/**",
+    "src/rx/frontend/*.json",
+    "src/rx/frontend/*.ts",
+    "src/rx/frontend/*.js",
+    "src/rx/frontend/*.md",
+    "src/rx/frontend/*.html",
+    "src/rx/frontend/.gitignore",
+    "src/rx/frontend/bun.lock",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/rx"]
 exclude = [
@@ -56,9 +79,6 @@ exclude = [
     "src/rx/frontend/.gitignore",
     "src/rx/frontend/bun.lock",
 ]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/rx/frontend/dist" = "rx/frontend/dist"
 
 [dependency-groups]
 dev = [
