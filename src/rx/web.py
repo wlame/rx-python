@@ -4,7 +4,7 @@ import os
 import platform
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from time import time
@@ -117,6 +117,22 @@ async def lifespan(app: FastAPI):
     # Startup: initialize task manager for background tasks
     app.state.task_manager = TaskManager()
     logger.info('Task manager initialized')
+
+    # Startup: ensure frontend is available
+    from rx.frontend_manager import ensure_frontend
+
+    logger.info('Checking for frontend updates...')
+    try:
+        frontend_available = await ensure_frontend()
+        if not frontend_available:
+            logger.error('Failed to ensure frontend availability - web UI may not work')
+            app.state.frontend_available = False
+        else:
+            app.state.frontend_available = True
+            logger.info('Frontend is ready')
+    except Exception as e:
+        logger.error(f'Error during frontend check: {e}')
+        app.state.frontend_available = False
 
     # Startup: schedule periodic task cleanup
     async def cleanup_tasks_periodically():
@@ -1091,7 +1107,7 @@ async def run_compress_task(
         await task_manager.update_task(
             task_id,
             status=TaskStatus.COMPLETED,
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             result=task_result,
         )
         logger.info(f'[Task {task_id}] Compression completed in {elapsed:.2f}s')
@@ -1101,7 +1117,7 @@ async def run_compress_task(
         await task_manager.update_task(
             task_id,
             status=TaskStatus.FAILED,
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             error=str(e),
         )
 
@@ -1168,7 +1184,7 @@ async def run_index_task(
         await task_manager.update_task(
             task_id,
             status=TaskStatus.COMPLETED,
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             result=task_result,
         )
         logger.info(f'[Task {task_id}] Indexing completed in {elapsed:.2f}s')
@@ -1178,7 +1194,7 @@ async def run_index_task(
         await task_manager.update_task(
             task_id,
             status=TaskStatus.FAILED,
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             error=str(e),
         )
 
@@ -1607,24 +1623,41 @@ async def tree(
 
 
 # Static file serving for frontend
-# Serve static assets (JS, CSS, etc.) from the built frontend
-# Support both development mode and PyInstaller bundled mode
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # Running in PyInstaller bundle
-    static_dir = Path(sys._MEIPASS) / 'rx' / 'frontend' / 'dist'
-    logger.info(f'PyInstaller mode: static_dir = {static_dir}')
-    logger.info(f'_MEIPASS = {sys._MEIPASS}')
-else:
-    # Running in development mode
-    static_dir = Path(__file__).parent / 'frontend' / 'dist'
-    logger.info(f'Development mode: static_dir = {static_dir}')
+# Use frontend_manager to get the frontend directory (from cache or local dev)
+from rx.frontend_manager import get_frontend_dir
 
-logger.info(f'Static dir exists: {static_dir.exists()}')
-if static_dir.exists():
-    logger.info(f'Static dir contents: {list(static_dir.iterdir())}')
-if static_dir.exists():
+
+# Try to get frontend directory from cache
+frontend_dir = get_frontend_dir()
+
+# Fallback to local development frontend if cache not available
+if not frontend_dir or not frontend_dir.exists():
+    logger.warning('Cached frontend not found, checking local development build...')
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running in PyInstaller bundle - try bundled frontend as fallback
+        local_frontend_dir = Path(sys._MEIPASS) / 'rx' / 'frontend' / 'dist'
+        logger.info(f'PyInstaller mode: checking bundled frontend at {local_frontend_dir}')
+    else:
+        # Running in development mode - check local build
+        local_frontend_dir = Path(__file__).parent / 'frontend' / 'dist'
+        logger.info(f'Development mode: checking local frontend at {local_frontend_dir}')
+
+    if local_frontend_dir.exists():
+        frontend_dir = local_frontend_dir
+        logger.info(f'Using local frontend from {frontend_dir}')
+    else:
+        logger.warning('No frontend available (neither cached nor local build)')
+        frontend_dir = None
+
+static_dir = frontend_dir
+
+if static_dir and static_dir.exists():
+    logger.info(f'Frontend directory: {static_dir}')
+    logger.info(f'Frontend contents: {list(static_dir.iterdir())[:5]}...')  # Show first 5 items
+
     # Mount static files (assets like JS, CSS)
-    app.mount('/assets', StaticFiles(directory=str(static_dir / 'assets')), name='assets')
+    if (static_dir / 'assets').exists():
+        app.mount('/assets', StaticFiles(directory=str(static_dir / 'assets')), name='assets')
 
     # Serve index.html at root
     @app.get('/', include_in_schema=False)
@@ -1633,7 +1666,10 @@ if static_dir.exists():
         index_path = static_dir / 'index.html'
         if index_path.exists():
             return FileResponse(index_path)
-        raise HTTPException(status_code=404, detail='Frontend not built. Run: make frontend-build')
+        raise HTTPException(
+            status_code=503,
+            detail='Frontend not available. The server will automatically download it on startup.',
+        )
 
     # Catch-all route for SPA (must be last)
     @app.get('/{full_path:path}', include_in_schema=False)
@@ -1653,7 +1689,10 @@ if static_dir.exists():
         if index_path.exists():
             return FileResponse(index_path)
 
-        raise HTTPException(status_code=404, detail='Frontend not built. Run: make frontend-build')
+        raise HTTPException(
+            status_code=503,
+            detail='Frontend not available. The server will automatically download it on startup.',
+        )
 else:
-    logger.warning(f'Frontend directory not found: {static_dir}. Frontend will not be served.')
-    logger.warning('Build the frontend with: make frontend-build')
+    logger.warning('Frontend not available. The server will attempt to download it from GitHub on startup.')
+    logger.warning('If running in development, build the frontend with: make frontend-build')
