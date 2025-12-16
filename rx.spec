@@ -1,6 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 PyInstaller spec file for RX Tracer
+
+Note: Frontend is now managed separately and downloaded from GitHub releases.
+      It is NOT bundled in the binary to keep the executable small.
 """
 
 import sys
@@ -9,24 +12,12 @@ from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
-# Collect frontend dist files
-frontend_dist = Path('src/rx/frontend/dist')
+# Frontend is NOT bundled - it will be downloaded from GitHub releases
+# This keeps the binary small and allows independent frontend updates
 datas = []
 
-if frontend_dist.exists():
-    # Add all files and subdirectories from frontend/dist to the bundle
-    # Need to add the directory and its contents recursively
-    for item in frontend_dist.rglob('*'):
-        if item.is_file():
-            # Get relative path from frontend/dist
-            rel_path = item.relative_to(frontend_dist.parent)
-            dest_path = f'rx/frontend/{rel_path.parent}'
-            datas.append((str(item), dest_path))
-
-    print(f"[OK] Including {len(datas)} frontend files from {frontend_dist}")
-else:
-    print(f"[WARN] Frontend dist not found at {frontend_dist}")
-    print("  Run: make frontend-build")
+print("[INFO] Frontend is not bundled in the binary")
+print("[INFO] The server will download frontend from GitHub releases on startup")
 
 # Hidden imports that PyInstaller might miss
 hiddenimports = [
@@ -45,10 +36,12 @@ hiddenimports = [
     'rx.analyse',
     'rx.regex',
     'rx.web',
+    'rx.frontend_manager',  # Added for frontend download management
     'uvicorn',
     'fastapi',
     'click',
     'sh',
+    'httpx',  # Added for GitHub API requests
 ]
 
 a = Analysis(

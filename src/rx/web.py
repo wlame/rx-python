@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import platform
-import sys
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
@@ -13,8 +12,7 @@ import anyio
 import psutil
 import sh
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from rx import file_utils as file_utils_module
@@ -26,6 +24,7 @@ from rx.analyse import analyse_path
 from rx.compressed_index import get_decompressed_content_at_line, get_or_build_compressed_index
 from rx.compression import CompressionFormat, detect_compression, is_compressed
 from rx.file_utils import get_context, get_context_by_lines, validate_file
+from rx.frontend_manager import ensure_frontend
 from rx.hooks import (
     call_hook_async,
     generate_request_id,
@@ -117,9 +116,6 @@ async def lifespan(app: FastAPI):
     # Startup: initialize task manager for background tasks
     app.state.task_manager = TaskManager()
     logger.info('Task manager initialized')
-
-    # Startup: ensure frontend is available
-    from rx.frontend_manager import ensure_frontend
 
     logger.info('Checking for frontend updates...')
     try:
@@ -410,7 +406,6 @@ async def trace(
 
     Returns matches where any of the patterns were found across all paths.
     """
-    from datetime import datetime
 
     if not app.state.rg:
         prom.record_error('service_unavailable')
@@ -1623,76 +1618,53 @@ async def tree(
 
 
 # Static file serving for frontend
-# Use frontend_manager to get the frontend directory (from cache or local dev)
-from rx.frontend_manager import get_frontend_dir
+# Use frontend_manager to get the frontend directory (from cache only)
+
+from rx.frontend_manager import get_frontend_dir, get_frontend_manager
 
 
-# Try to get frontend directory from cache
-frontend_dir = get_frontend_dir()
-
-# Fallback to local development frontend if cache not available
-if not frontend_dir or not frontend_dir.exists():
-    logger.warning('Cached frontend not found, checking local development build...')
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # Running in PyInstaller bundle - try bundled frontend as fallback
-        local_frontend_dir = Path(sys._MEIPASS) / 'rx' / 'frontend' / 'dist'
-        logger.info(f'PyInstaller mode: checking bundled frontend at {local_frontend_dir}')
-    else:
-        # Running in development mode - check local build
-        local_frontend_dir = Path(__file__).parent / 'frontend' / 'dist'
-        logger.info(f'Development mode: checking local frontend at {local_frontend_dir}')
-
-    if local_frontend_dir.exists():
-        frontend_dir = local_frontend_dir
-        logger.info(f'Using local frontend from {frontend_dir}')
-    else:
-        logger.warning('No frontend available (neither cached nor local build)')
-        frontend_dir = None
-
-static_dir = frontend_dir
-
-if static_dir and static_dir.exists():
-    logger.info(f'Frontend directory: {static_dir}')
-    logger.info(f'Frontend contents: {list(static_dir.iterdir())[:5]}...')  # Show first 5 items
-
-    # Mount static files (assets like JS, CSS)
-    if (static_dir / 'assets').exists():
-        app.mount('/assets', StaticFiles(directory=str(static_dir / 'assets')), name='assets')
-
-    # Serve index.html at root
-    @app.get('/', include_in_schema=False)
-    async def serve_frontend():
-        """Serve the frontend index.html"""
-        index_path = static_dir / 'index.html'
+# Define routes that check for frontend dynamically (after startup downloads)
+# Serve index.html at root
+@app.get('/', include_in_schema=False)
+async def serve_frontend():
+    """Serve the frontend index.html or redirect to docs"""
+    frontend_dir = get_frontend_dir()
+    if frontend_dir and frontend_dir.exists():
+        index_path = frontend_dir / 'index.html'
         if index_path.exists():
             return FileResponse(index_path)
-        raise HTTPException(
-            status_code=503,
-            detail='Frontend not available. The server will automatically download it on startup.',
-        )
+    # Redirect to API docs if frontend not available
+    return RedirectResponse(url='/docs')
 
-    # Catch-all route for SPA (must be last)
-    @app.get('/{full_path:path}', include_in_schema=False)
-    async def serve_spa(full_path: str):
-        """Serve SPA for client-side routing (catch-all for non-API routes)"""
-        # Don't catch API routes or special paths
-        if full_path.startswith(('v1/', 'health', 'metrics', 'docs', 'redoc', 'openapi.json')):
-            raise HTTPException(status_code=404, detail=f'Not found: /{full_path}')
 
-        # Try to serve static file first
-        file_path = static_dir / full_path
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
+# Catch-all route for SPA (must be last)
+@app.get('/{full_path:path}', include_in_schema=False)
+async def serve_spa(full_path: str):
+    """Serve SPA for client-side routing (catch-all for non-API routes)
 
-        # Fall back to index.html for SPA routing
-        index_path = static_dir / 'index.html'
-        if index_path.exists():
-            return FileResponse(index_path)
+    Security: Validates paths to prevent directory traversal attacks like ../../etc/passwd
+    """
+    # Don't catch API routes or special paths
+    if full_path.startswith(('v1/', 'health', 'metrics', 'docs', 'redoc', 'openapi.json')):
+        raise HTTPException(status_code=404, detail=f'Not found: /{full_path}')
 
-        raise HTTPException(
-            status_code=503,
-            detail='Frontend not available. The server will automatically download it on startup.',
-        )
-else:
-    logger.warning('Frontend not available. The server will attempt to download it from GitHub on startup.')
-    logger.warning('If running in development, build the frontend with: make frontend-build')
+    # Check if frontend is available
+    frontend_dir = get_frontend_dir()
+    if not frontend_dir or not frontend_dir.exists():
+        # No frontend available, redirect to docs
+        return RedirectResponse(url='/docs')
+
+    # Try to serve static file first with security validation
+    manager = get_frontend_manager()
+    validated_path = manager.validate_static_file_path(full_path)
+
+    if validated_path:
+        return FileResponse(validated_path)
+
+    # Fall back to index.html for SPA routing (if no static file found)
+    index_path = frontend_dir / 'index.html'
+    if index_path.exists():
+        return FileResponse(index_path)
+
+    # Redirect to API docs if frontend not available
+    return RedirectResponse(url='/docs')

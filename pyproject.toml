@@ -43,7 +43,6 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-# Don't respect .gitignore for frontend/dist since we need it in the package
 ignore-vcs = true
 
 [tool.hatch.build.targets.sdist]
@@ -53,31 +52,13 @@ include = [
     "pyproject.toml",
 ]
 exclude = [
-    "src/rx/frontend/node_modules/**",
-    "src/rx/frontend/src/**",
-    "src/rx/frontend/public/**",
-    "src/rx/frontend/*.json",
-    "src/rx/frontend/*.ts",
-    "src/rx/frontend/*.js",
-    "src/rx/frontend/*.md",
-    "src/rx/frontend/*.html",
-    "src/rx/frontend/.gitignore",
-    "src/rx/frontend/bun.lock",
+    "src/rx/frontend/**",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rx"]
 exclude = [
-    "src/rx/frontend/node_modules/**",
-    "src/rx/frontend/src/**",
-    "src/rx/frontend/public/**",
-    "src/rx/frontend/*.json",
-    "src/rx/frontend/*.ts",
-    "src/rx/frontend/*.js",
-    "src/rx/frontend/*.md",
-    "src/rx/frontend/*.html",
-    "src/rx/frontend/.gitignore",
-    "src/rx/frontend/bun.lock",
+    "src/rx/frontend/**",
 ]
 
 [dependency-groups]
