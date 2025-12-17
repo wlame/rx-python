@@ -112,33 +112,6 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install Bun in container
-        if: steps.should_build.outputs.should_run == 'true' && matrix.container == 'ubuntu:20.04'
-        run: |
-          curl -fsSL https://bun.sh/install | bash
-        env:
-          BUN_INSTALL: /root/.bun
-
-      - name: Install Bun
-        if: steps.should_build.outputs.should_run == 'true' && matrix.container == null
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Build frontend in container
-        if: steps.should_build.outputs.should_run == 'true' && matrix.container == 'ubuntu:20.04'
-        run: |
-          cd src/rx/frontend
-          /root/.bun/bin/bun install
-          /root/.bun/bin/bun run build
-
-      - name: Build frontend
-        if: steps.should_build.outputs.should_run == 'true' && matrix.container == null
-        run: |
-          cd src/rx/frontend
-          bun install
-          bun run build
-
       - name: Install dependencies in container
         if: steps.should_build.outputs.should_run == 'true' && matrix.container == 'ubuntu:20.04'
         run: |

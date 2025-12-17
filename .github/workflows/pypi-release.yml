@@ -26,17 +26,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Build frontend
-        run: |
-          cd src/rx/frontend
-          bun install
-          bun run build
-
       - name: Build package
         run: uv build
 

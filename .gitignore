@@ -28,6 +28,9 @@ Thumbs.db
 !.env.example
 .debug_*
 
+# Frontend (now in separate rx-viewer repository)
+src/rx/frontend/
+
 # Build artifacts
 dist/
 build/
@@ -37,3 +40,9 @@ build/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# temp
+
+docs/
+scripts/
+.claude/

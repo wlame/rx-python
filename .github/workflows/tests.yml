@@ -23,9 +23,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ripgrep
 
-      - name: Build frontend
-        run: make frontend-build
-
       - name: Install dependencies
         run: uv sync
 
