@@ -6,6 +6,7 @@ output format for richer match data and context extraction.
 
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -17,11 +18,17 @@ from datetime import datetime
 from rx.cli import prometheus as prom
 from rx.compression import CompressionFormat, detect_compression, get_decompressor_command, is_compressed
 from rx.file_utils import MAX_SUBPROCESSES, FileTask, create_file_tasks, scan_directory_for_text_files, validate_file
-from rx.index import get_large_file_threshold_bytes
+from rx.index import (
+    calculate_lines_for_offsets_batch,
+    get_index_path,
+    get_large_file_threshold_bytes,
+    is_index_valid,
+    load_index,
+)
 from rx.models import ContextLine, FileScannedPayload, MatchFoundPayload, ParseResult, Submatch
 from rx.rg_json import RgContextEvent, RgMatchEvent, parse_rg_json_event
 from rx.seekable_index import get_or_build_index
-from rx.seekable_zstd import is_seekable_zstd, read_seek_table
+from rx.seekable_zstd import decompress_frame, is_seekable_zstd, read_seek_table
 from rx.trace_cache import (
     build_cache_from_matches,
     get_cached_matches,
@@ -645,8 +652,6 @@ def process_seekable_zstd_file(
 
     # Check if frames are line-aligned by testing first frame
     # Line-aligned frames end with newline; non-aligned frames split lines across boundaries
-    from rx.seekable_zstd import decompress_frame
-
     first_frame_data = decompress_frame(filepath, 0, read_seek_table(filepath))
     frames_are_line_aligned = first_frame_data.endswith(b'\n')
 
@@ -775,7 +780,6 @@ def identify_matching_patterns(
     Returns:
         List of pattern_ids that matched (may contain multiple patterns)
     """
-    import re
 
     if not submatches:
         # No submatches, return first pattern
@@ -1719,7 +1723,6 @@ def parse_multiple_files_multipattern(
     # Calculate absolute line numbers for matches that don't have them
     # This is needed for regular files processed in chunks where ripgrep only knows
     # the line number within the chunk, not the absolute line in the file
-    from rx.index import calculate_lines_for_offsets_batch, get_index_path, is_index_valid, load_index
 
     # Group matches and context lines by file_id for batch processing
     matches_by_file: dict[str, list[dict]] = {}

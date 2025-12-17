@@ -85,7 +85,7 @@ def load_compressed_index(source_path: str | Path) -> dict | None:
         with open(index_path) as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        logger.warning(f'Failed to load compressed index {index_path}: {e}')
+        logger.warning(f"Failed to load compressed index {index_path}: {e}")
         return None
 
 
@@ -111,7 +111,7 @@ def is_compressed_index_valid(source_path: str | Path) -> bool:
 
     # Check version
     if index_data.get('version') != INDEX_VERSION:
-        logger.debug(f'Index version mismatch for {source_path}')
+        logger.debug(f"Index version mismatch for {source_path}")
         return False
 
     # Check source file still exists and matches
@@ -121,11 +121,11 @@ def is_compressed_index_valid(source_path: str | Path) -> bool:
         source_size = stat.st_size
 
         if index_data.get('source_size_bytes') != source_size:
-            logger.debug(f'Source file size changed for {source_path}')
+            logger.debug(f"Source file size changed for {source_path}")
             return False
 
         if index_data.get('source_modified_at') != source_mtime:
-            logger.debug(f'Source file mtime changed for {source_path}')
+            logger.debug(f"Source file mtime changed for {source_path}")
             return False
 
     except OSError:
@@ -159,9 +159,9 @@ def build_compressed_index(
 
     compression_format = detect_compression(source_path)
     if compression_format == CompressionFormat.NONE:
-        raise ValueError(f'File is not compressed: {source_path}')
+        raise ValueError(f"File is not compressed: {source_path}")
 
-    logger.info(f'Building compressed index for {source_path}')
+    logger.info(f"Building compressed index for {source_path}")
     start_time = time.time()
 
     # Get source file metadata
@@ -211,11 +211,11 @@ def build_compressed_index(
 
         if proc.returncode != 0:
             stderr = proc.stderr.read().decode() if proc.stderr else ''
-            raise RuntimeError(f'Decompression failed: {stderr}')
+            raise RuntimeError(f"Decompression failed: {stderr}")
 
     except Exception as e:
         proc.kill()
-        raise RuntimeError(f'Failed to build index: {e}')
+        raise RuntimeError(f"Failed to build index: {e}")
 
     elapsed = time.time() - start_time
     total_lines = current_line
@@ -262,7 +262,7 @@ def save_compressed_index(index_data: dict, source_path: str | Path) -> Path:
     with open(index_path, 'w') as f:
         json.dump(index_data, f, indent=2)
 
-    logger.debug(f'Saved compressed index to {index_path}')
+    logger.debug(f"Saved compressed index to {index_path}")
     return index_path
 
 
@@ -280,7 +280,7 @@ def get_or_build_compressed_index(
         Index data dictionary
     """
     if is_compressed_index_valid(source_path):
-        logger.debug(f'Using cached compressed index for {source_path}')
+        logger.debug(f"Using cached compressed index for {source_path}")
         return load_compressed_index(source_path)
 
     # Build new index
@@ -403,7 +403,7 @@ def get_decompressed_lines(
 
     except Exception as e:
         proc.kill()
-        raise RuntimeError(f'Failed to read lines from compressed file: {e}')
+        raise RuntimeError(f"Failed to read lines from compressed file: {e}")
 
 
 def get_decompressed_content_at_line(
@@ -448,7 +448,7 @@ def delete_compressed_index(source_path: str | Path) -> bool:
 
     if index_path.exists():
         index_path.unlink()
-        logger.debug(f'Deleted compressed index {index_path}')
+        logger.debug(f"Deleted compressed index {index_path}")
         return True
 
     return False
@@ -499,5 +499,5 @@ def clear_compressed_indexes() -> int:
         except OSError:
             pass
 
-    logger.info(f'Cleared {count} compressed indexes')
+    logger.info(f"Cleared {count} compressed indexes")
     return count

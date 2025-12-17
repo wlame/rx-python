@@ -320,8 +320,6 @@ class FrontendManager:
                     if item.is_file():
                         item.unlink()
                     elif item.is_dir():
-                        import shutil
-
                         shutil.rmtree(item)
 
             # Extract to cache directory

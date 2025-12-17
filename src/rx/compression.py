@@ -198,11 +198,11 @@ def get_decompressor_command(format: CompressionFormat, filepath: str | Path | N
         ValueError: If format is not supported or NONE
     """
     if format == CompressionFormat.NONE:
-        raise ValueError('Cannot get decompressor for uncompressed files')
+        raise ValueError("Cannot get decompressor for uncompressed files")
 
     cmd = DECOMPRESSOR_COMMANDS.get(format.value)
     if not cmd:
-        raise ValueError(f'Unknown compression format: {format}')
+        raise ValueError(f"Unknown compression format: {format}")
 
     result = cmd.copy()
     if filepath:
@@ -292,7 +292,7 @@ def decompress_to_stdout(
         format = detect_compression(filepath)
 
     if format == CompressionFormat.NONE:
-        raise ValueError(f'File is not compressed or format not recognized: {filepath}')
+        raise ValueError(f"File is not compressed or format not recognized: {filepath}")
 
     if not check_decompressor_available(format):
         raise FileNotFoundError(
@@ -332,7 +332,7 @@ def decompress_file(
     stdout, stderr = proc.communicate()
 
     if proc.returncode != 0:
-        raise RuntimeError(f'Decompression failed with code {proc.returncode}: {stderr.decode()}')
+        raise RuntimeError(f"Decompression failed with code {proc.returncode}: {stderr.decode()}")
 
     return stdout
 
@@ -358,7 +358,7 @@ def decompress_to_file(
         format = detect_compression(input_path)
 
     if format == CompressionFormat.NONE:
-        raise ValueError(f'File is not compressed: {input_path}')
+        raise ValueError(f"File is not compressed: {input_path}")
 
     if not check_decompressor_available(format):
         raise FileNotFoundError(
@@ -379,10 +379,10 @@ def decompress_to_file(
 
             if result.returncode != 0:
                 error_msg = result.stderr.decode('utf-8', errors='replace')
-                raise OSError(f'Decompression failed: {error_msg}')
+                raise OSError(f"Decompression failed: {error_msg}")
     except OSError:
         # Re-raise OSError (includes "No space left" errors)
         raise
     except Exception as e:
         # Wrap other exceptions as OSError
-        raise OSError(f'Decompression failed: {e}') from e
+        raise OSError(f"Decompression failed: {e}") from e

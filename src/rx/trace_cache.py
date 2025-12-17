@@ -31,6 +31,8 @@ from rx.cli import prometheus as prom
 from rx.file_utils import get_context_by_lines
 from rx.index import get_large_file_threshold_bytes
 from rx.models import ContextLine, Submatch
+from rx.seekable_index import get_or_build_index
+from rx.seekable_zstd import decompress_frame
 from rx.utils import get_rx_cache_dir
 
 
@@ -608,9 +610,6 @@ def reconstruct_seekable_zstd_matches(
     Returns:
         Tuple of (list of match dicts, list of context lines)
     """
-    from rx.seekable_index import get_or_build_index
-    from rx.seekable_zstd import decompress_frame
-
     start_time = time.time()
 
     # Get index for line number mapping

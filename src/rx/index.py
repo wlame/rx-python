@@ -112,7 +112,7 @@ def is_index_valid(source_path: str) -> bool:
             and index_data.get('source_size_bytes') == source_stat.st_size
         )
     except (OSError, json.JSONDecodeError, KeyError) as e:
-        logger.debug(f'Index validation failed for {source_path}: {e}')
+        logger.debug(f"Index validation failed for {source_path}: {e}")
         return False
 
 
@@ -132,14 +132,14 @@ def load_index(index_path: Path | str) -> dict | None:
 
         # Validate version
         if data.get('version') != INDEX_VERSION:
-            logger.warning(f'Index version mismatch: {data.get("version")} != {INDEX_VERSION}')
+            logger.warning(f"Index version mismatch: {data.get("version")} != {INDEX_VERSION}")
             prom.index_load_duration_seconds.observe(time.time() - start_time)
             return None
 
         prom.index_load_duration_seconds.observe(time.time() - start_time)
         return data
     except (OSError, json.JSONDecodeError) as e:
-        logger.debug(f'Failed to load index {index_path}: {e}')
+        logger.debug(f"Failed to load index {index_path}: {e}")
         prom.index_load_duration_seconds.observe(time.time() - start_time)
         return None
 
@@ -162,7 +162,7 @@ def save_index(index_data: dict, index_path: Path | str) -> bool:
             json.dump(index_data, f, indent=2)
         return True
     except OSError as e:
-        logger.error(f'Failed to save index {index_path}: {e}')
+        logger.error(f"Failed to save index {index_path}: {e}")
         return False
 
 
@@ -179,10 +179,10 @@ def delete_index(source_path: str) -> bool:
     try:
         if index_path.exists():
             index_path.unlink()
-            logger.info(f'Deleted index for {source_path}')
+            logger.info(f"Deleted index for {source_path}")
         return True
     except OSError as e:
-        logger.error(f'Failed to delete index {index_path}: {e}')
+        logger.error(f"Failed to delete index {index_path}: {e}")
         return False
 
 
@@ -355,11 +355,11 @@ def create_index_file(source_path: str, force: bool = False) -> dict | None:
 
     # Check if valid index exists (unless forcing)
     if not force and is_index_valid(source_path):
-        logger.info(f'Valid index exists for {source_path}')
+        logger.info(f"Valid index exists for {source_path}")
         return load_index(get_index_path(source_path))
 
     # Build new index
-    logger.info(f'Building index for {source_path}')
+    logger.info(f"Building index for {source_path}")
     try:
         source_stat = os.stat(source_path)
         build_result = build_index(source_path)
@@ -389,12 +389,12 @@ def create_index_file(source_path: str, force: bool = False) -> dict | None:
 
         index_path = get_index_path(source_path)
         if save_index(index_data, index_path):
-            logger.info(f'Index saved to {index_path}')
+            logger.info(f"Index saved to {index_path}")
             return index_data
         return None
 
     except Exception as e:
-        logger.error(f'Failed to build index for {source_path}: {e}')
+        logger.error(f"Failed to build index for {source_path}: {e}")
         return None
 
 
@@ -473,7 +473,7 @@ def calculate_exact_offset_for_line(filename: str, target_line: int, index_data:
                 # Reached EOF before finding target line
                 return -1
         except OSError as e:
-            logger.error(f'Failed to read file {filename}: {e}')
+            logger.error(f"Failed to read file {filename}: {e}")
             return -1
 
     # No index - check if file is small enough to read
@@ -499,7 +499,7 @@ def calculate_exact_offset_for_line(filename: str, target_line: int, index_data:
             # Target line beyond EOF
             return -1
     except OSError as e:
-        logger.error(f'Failed to process file {filename}: {e}')
+        logger.error(f"Failed to process file {filename}: {e}")
         return -1
 
 
@@ -561,7 +561,7 @@ def calculate_exact_line_for_offset(filename: str, target_offset: int, index_dat
                 # Reached EOF
                 return -1
         except OSError as e:
-            logger.error(f'Failed to read file {filename}: {e}')
+            logger.error(f"Failed to read file {filename}: {e}")
             return -1
 
     # No index - check if file is small enough to read
@@ -590,7 +590,7 @@ def calculate_exact_line_for_offset(filename: str, target_offset: int, index_dat
             # EOF
             return -1
     except OSError as e:
-        logger.error(f'Failed to process file {filename}: {e}')
+        logger.error(f"Failed to process file {filename}: {e}")
         return -1
 
 
@@ -681,7 +681,7 @@ def calculate_lines_for_offsets_batch(
                 current_line += 1
 
     except OSError as e:
-        logger.error(f'Failed to read file {filename}: {e}')
+        logger.error(f"Failed to read file {filename}: {e}")
 
     return results
 

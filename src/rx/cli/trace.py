@@ -513,7 +513,7 @@ def trace_command(
 
                 # Update request info with results
                 update_request(
-                    req_id,
+                    request_id=req_id,
                     completed_at=datetime.now(),
                     total_matches=len(parse_result.matches),
                     total_files_scanned=len(parse_result.files),

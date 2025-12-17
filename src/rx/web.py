@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import pathlib
 import platform
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -19,11 +20,12 @@ from rx import file_utils as file_utils_module
 
 # Import real prometheus for server mode and swap it into file_utils module
 from rx import prometheus as prom
+from rx import trace as trace_module
 from rx.__version__ import __version__
 from rx.analyse import analyse_path
 from rx.compressed_index import get_decompressed_content_at_line, get_or_build_compressed_index
 from rx.compression import CompressionFormat, detect_compression, is_compressed
-from rx.file_utils import get_context, get_context_by_lines, validate_file
+from rx.file_utils import get_context, get_context_by_lines, is_text_file, validate_file
 from rx.frontend_manager import ensure_frontend
 from rx.hooks import (
     call_hook_async,
@@ -31,7 +33,15 @@ from rx.hooks import (
     get_effective_hooks,
     get_hook_env_config,
 )
-from rx.index import create_index_file, get_index_path, get_large_file_threshold_bytes
+from rx.index import (
+    calculate_exact_line_for_offset,
+    calculate_exact_offset_for_line,
+    create_index_file,
+    get_index_path,
+    get_large_file_threshold_bytes,
+    is_index_valid,
+    load_index,
+)
 from rx.models import (
     AnalyseResponse,
     ComplexityResponse,
@@ -56,9 +66,11 @@ from rx.path_security import (
 )
 from rx.regex import calculate_regex_complexity
 from rx.request_store import store_request, update_request
-from rx.seekable_zstd import create_seekable_zstd
-from rx.task_manager import TaskManager
+from rx.seekable_index import build_index as build_seekable_index
+from rx.seekable_zstd import create_seekable_zstd, is_seekable_zstd
+from rx.task_manager import TaskManager, TaskStatus
 from rx.trace import HookCallbacks, parse_paths
+from rx.utils import NEWLINE_SYMBOL, get_rx_cache_base
 
 
 # Replace the noop prometheus in file_utils module with real one
@@ -202,7 +214,6 @@ app = FastAPI(
 @app.get('/favicon.ico', include_in_schema=False)
 async def favicon():
     # Serve the favicon (SVG format)
-    import pathlib
 
     favicon_path = pathlib.Path(__file__).parent / 'favicon.svg'
     if favicon_path.exists():
@@ -247,16 +258,13 @@ def get_python_packages() -> dict:
 
 def get_constants() -> dict:
     # Collect application constants
-    from rx import file_utils, trace
-    from rx.utils import NEWLINE_SYMBOL, get_rx_cache_base
-
     return {
         'LOG_LEVEL': log_level_name,
-        'DEBUG_MODE': trace.DEBUG_MODE,
-        'LINE_SIZE_ASSUMPTION_KB': file_utils.LINE_SIZE_ASSUMPTION_KB,
-        'MAX_SUBPROCESSES': file_utils.MAX_SUBPROCESSES,
-        'MIN_CHUNK_SIZE_MB': file_utils.MIN_CHUNK_SIZE // (1024 * 1024),
-        'MAX_FILES': file_utils.MAX_FILES,
+        'DEBUG_MODE': trace_module.DEBUG_MODE,
+        'LINE_SIZE_ASSUMPTION_KB': file_utils_module.LINE_SIZE_ASSUMPTION_KB,
+        'MAX_SUBPROCESSES': file_utils_module.MAX_SUBPROCESSES,
+        'MIN_CHUNK_SIZE_MB': file_utils_module.MIN_CHUNK_SIZE // (1024 * 1024),
+        'MAX_FILES': file_utils_module.MAX_FILES,
         'NEWLINE_SYMBOL': repr(NEWLINE_SYMBOL),  # Show as repr to see escape sequences
         'CACHE_DIR': str(get_rx_cache_base()),  # Effective cache directory
     }
@@ -909,13 +917,6 @@ async def samples(
             }
 
         # Regular file handling
-        from rx.index import (
-            calculate_exact_line_for_offset,
-            calculate_exact_offset_for_line,
-            get_index_path,
-            load_index,
-        )
-
         # Load index once for mapping calculations
         index_path = get_index_path(path)
         index_data = await anyio.to_thread.run_sync(load_index, index_path)
@@ -1039,9 +1040,6 @@ async def run_compress_task(
 ):
     """Run compression in background."""
 
-    from rx.seekable_index import build_index as build_seekable_index
-    from rx.task_manager import TaskStatus
-
     try:
         await task_manager.update_task(task_id, status=TaskStatus.RUNNING)
         logger.info(f'[Task {task_id}] Starting compression of {normalized_path}')
@@ -1124,11 +1122,6 @@ async def run_index_task(
     normalized_path: str,
 ):
     """Run indexing in background."""
-    import os
-
-    from rx.seekable_index import build_index as build_seekable_index
-    from rx.seekable_zstd import is_seekable_zstd
-    from rx.task_manager import TaskStatus
 
     try:
         await task_manager.update_task(task_id, status=TaskStatus.RUNNING)
@@ -1224,8 +1217,6 @@ async def compress(request: CompressRequest):
     **Returns:**
     Task information with task_id for status polling.
     """
-    import os
-
     # Validate path security
     try:
         normalized_path = validate_path_within_root(request.input_path)
@@ -1297,7 +1288,6 @@ async def index(request: IndexRequest):
     **Returns:**
     Task information with task_id for status polling.
     """
-    import os
 
     # Validate path security
     try:
@@ -1397,10 +1387,6 @@ def get_entry_metadata(entry_path: str, entry_name: str, is_dir: bool) -> dict:
     Returns:
         Dictionary with entry metadata
     """
-    from rx.compression import detect_compression, is_compressed
-    from rx.file_utils import is_text_file
-    from rx.index import get_index_path, is_index_valid, load_index
-
     result = {
         'name': entry_name,
         'path': entry_path,
@@ -1511,8 +1497,6 @@ async def tree(
     GET /v1/tree?path=/var/log      # List /var/log contents
     ```
     """
-    from rx.models import TreeResponse
-
     # If no path, return search roots
     if path is None:
         search_roots = get_search_roots()

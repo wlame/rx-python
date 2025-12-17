@@ -13,6 +13,7 @@ enabling fast samples extraction without full decompression.
 import hashlib
 import json
 import logging
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -424,8 +425,6 @@ def find_frames_for_lines(index: SeekableIndex, line_numbers: list[int]) -> dict
     Returns:
         Dictionary mapping frame_index to list of line numbers in that frame
     """
-    from collections import defaultdict
-
     frames_to_lines = defaultdict(list)
 
     for line_num in line_numbers:

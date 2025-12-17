@@ -177,16 +177,16 @@ def compress_command(
     try:
         frame_size_bytes = parse_size(frame_size)
     except ValueError:
-        click.echo(f'Error: Invalid frame size: {frame_size}', err=True)
+        click.echo(f"Error: Invalid frame size: {frame_size}", err=True)
         sys.exit(1)
 
     # Validate output options
     if output and output_dir:
-        click.echo('Error: Cannot specify both --output and --output-dir', err=True)
+        click.echo("Error: Cannot specify both --output and --output-dir", err=True)
         sys.exit(1)
 
     if output and len(paths) > 1:
-        click.echo('Error: --output can only be used with single input file', err=True)
+        click.echo("Error: --output can only be used with single input file", err=True)
         sys.exit(1)
 
     # Create output directory if specified
@@ -245,19 +245,19 @@ def _show_tool_info(json_output: bool) -> None:
     if json_output:
         click.echo(json.dumps(info, indent=2))
     else:
-        click.echo('Compression Tools:')
+        click.echo("Compression Tools:")
         if t2sz_available:
-            click.echo('  t2sz: available (recommended)')
+            click.echo("  t2sz: available (recommended)")
         else:
-            click.echo('  t2sz: not found')
-            click.echo('  Using fallback: pyzstd library')
-            click.echo('')
-            click.echo('  For better performance, install t2sz:')
-            click.echo('    https://github.com/martinellimarco/t2sz')
+            click.echo("  t2sz: not found")
+            click.echo("  Using fallback: pyzstd library")
+            click.echo("")
+            click.echo("  For better performance, install t2sz:")
+            click.echo("    https://github.com/martinellimarco/t2sz")
 
-        click.echo('')
-        click.echo(f'Default frame size: {human_readable_size(DEFAULT_FRAME_SIZE_BYTES)}')
-        click.echo(f'Default compression level: {DEFAULT_COMPRESSION_LEVEL}')
+        click.echo("")
+        click.echo(f"Default frame size: {human_readable_size(DEFAULT_FRAME_SIZE_BYTES)}")
+        click.echo(f"Default compression level: {DEFAULT_COMPRESSION_LEVEL}")
 
 
 def _show_file_info(
@@ -271,7 +271,7 @@ def _show_file_info(
         result['success'] = False
         result['error'] = 'Not a seekable zstd file'
         if not json_output:
-            click.echo(f'{input_path}: not a seekable zstd file', err=True)
+            click.echo(f"{input_path}: not a seekable zstd file", err=True)
         return
 
     try:
@@ -293,33 +293,33 @@ def _show_file_info(
             result['index'] = idx_info
 
         if not json_output:
-            click.echo(f'\n{input_path}:')
-            click.echo(f'  Compressed size: {human_readable_size(zst_info.compressed_size)}')
-            click.echo(f'  Decompressed size: {human_readable_size(zst_info.decompressed_size)}')
-            click.echo(f'  Compression ratio: {result["seekable_zstd"]["compression_ratio"]}:1')
-            click.echo(f'  Frame count: {zst_info.frame_count}')
-            click.echo(f'  Frame size target: {human_readable_size(zst_info.frame_size_target)}')
+            click.echo(f"\n{input_path}:")
+            click.echo(f"  Compressed size: {human_readable_size(zst_info.compressed_size)}")
+            click.echo(f"  Decompressed size: {human_readable_size(zst_info.decompressed_size)}")
+            click.echo(f"  Compression ratio: {result["seekable_zstd"]["compression_ratio"]}:1")
+            click.echo(f"  Frame count: {zst_info.frame_count}")
+            click.echo(f"  Frame size target: {human_readable_size(zst_info.frame_size_target)}")
 
             if idx_info:
-                click.echo(f'  Index: valid={idx_info["is_valid"]}, lines={idx_info["total_lines"]:,}')
+                click.echo(f"  Index: valid={idx_info["is_valid"]}, lines={idx_info["total_lines"]:,}")
             else:
-                click.echo('  Index: not built (run without --info to build)')
+                click.echo("  Index: not built (run without --info to build)")
 
             if verbose and zst_info.frames:
-                click.echo('\n  Frames:')
+                click.echo("\n  Frames:")
                 for i, frame in enumerate(zst_info.frames[:10]):
                     click.echo(
                         f'    [{i}] compressed={human_readable_size(frame.compressed_size)}, '
                         f'decompressed={human_readable_size(frame.decompressed_size)}'
                     )
                 if len(zst_info.frames) > 10:
-                    click.echo(f'    ... and {len(zst_info.frames) - 10} more frames')
+                    click.echo(f"    ... and {len(zst_info.frames) - 10} more frames")
 
     except Exception as e:
         result['success'] = False
         result['error'] = str(e)
         if not json_output:
-            click.echo(f'{input_path}: error reading file: {e}', err=True)
+            click.echo(f"{input_path}: error reading file: {e}", err=True)
 
 
 def _compress_file(
@@ -344,7 +344,7 @@ def _compress_file(
         result['success'] = False
         result['error'] = 'Compound archives (tar.gz, etc.) are not supported'
         if not json_output:
-            click.echo(f'{input_path}: skipped (compound archive not supported)', err=True)
+            click.echo(f"{input_path}: skipped (compound archive not supported)", err=True)
         return
 
     # Skip if already seekable zstd (unless recompressing with different settings)
@@ -352,7 +352,7 @@ def _compress_file(
         result['success'] = False
         result['error'] = 'Already a seekable zstd file (use --force to recompress)'
         if not json_output:
-            click.echo(f'{input_path}: already seekable zstd (use --force to recompress)')
+            click.echo(f"{input_path}: already seekable zstd (use --force to recompress)")
         return
 
     # Determine output path
@@ -380,26 +380,26 @@ def _compress_file(
         result['success'] = False
         result['error'] = f'Output file exists: {output_path} (use --force to overwrite)'
         if not json_output:
-            click.echo(f'{input_path}: output exists (use --force to overwrite)', err=True)
+            click.echo(f"{input_path}: output exists (use --force to overwrite)", err=True)
         return
 
     # Compress
     if not json_output:
         input_size = input_path_obj.stat().st_size
-        click.echo(f'Compressing {input_path} ({human_readable_size(input_size)})...')
+        click.echo(f"Compressing {input_path} ({human_readable_size(input_size)})...")
         if verbose:
-            click.echo(f'  Output: {output_path}')
-            click.echo(f'  Frame size: {human_readable_size(frame_size_bytes)}')
-            click.echo(f'  Level: {level}')
+            click.echo(f"  Output: {output_path}")
+            click.echo(f"  Frame size: {human_readable_size(frame_size_bytes)}")
+            click.echo(f"  Level: {level}")
             if check_t2sz_available():
-                click.echo('  Using: t2sz')
+                click.echo("  Using: t2sz")
             else:
-                click.echo('  Using: pyzstd (fallback)')
+                click.echo("  Using: pyzstd (fallback)")
 
     def progress_callback(bytes_done: int, total: int) -> None:
         if verbose and not json_output and total > 0:
             pct = bytes_done * 100 // total
-            click.echo(f'\r  Progress: {pct}%', nl=False)
+            click.echo(f"\r  Progress: {pct}%", nl=False)
 
     try:
         zst_info = create_seekable_zstd(
@@ -434,12 +434,12 @@ def _compress_file(
         # Build index unless --no-index
         if not no_index:
             if not json_output:
-                click.echo('  Building line index...')
+                click.echo("  Building line index...")
 
             def index_progress(frame_idx: int, total: int) -> None:
                 if verbose and not json_output and total > 0:
                     pct = frame_idx * 100 // total
-                    click.echo(f'\r  Indexing: {pct}%', nl=False)
+                    click.echo(f"\r  Indexing: {pct}%", nl=False)
 
             try:
                 index = build_index(output_path, progress_callback=index_progress if verbose else None)
@@ -453,12 +453,12 @@ def _compress_file(
                 }
 
                 if not json_output:
-                    click.echo(f'  Index: {index.total_lines:,} lines indexed')
+                    click.echo(f"  Index: {index.total_lines:,} lines indexed")
 
             except Exception as e:
                 result['index_error'] = str(e)
                 if not json_output:
-                    click.echo(f'  Warning: failed to build index: {e}', err=True)
+                    click.echo(f"  Warning: failed to build index: {e}", err=True)
 
         # Delete source if requested
         if delete_source:
@@ -466,15 +466,15 @@ def _compress_file(
                 os.remove(input_path)
                 result['source_deleted'] = True
                 if not json_output:
-                    click.echo(f'  Deleted source: {input_path}')
+                    click.echo(f"  Deleted source: {input_path}")
             except OSError as e:
                 result['source_deleted'] = False
                 result['delete_error'] = str(e)
                 if not json_output:
-                    click.echo(f'  Warning: failed to delete source: {e}', err=True)
+                    click.echo(f"  Warning: failed to delete source: {e}", err=True)
 
     except Exception as e:
         result['success'] = False
         result['error'] = str(e)
         if not json_output:
-            click.echo(f'  Error: {e}', err=True)
+            click.echo(f"  Error: {e}", err=True)
