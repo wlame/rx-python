@@ -217,8 +217,19 @@ rx index /var/log/huge.log --info         # Show index info
 Extract context lines around byte offsets or line numbers.
 
 ```bash
-rx samples /var/log/app.log -b 12345,67890 --context=3   # Byte offsets
-rx samples /var/log/app.log -l 100,200 --context=5       # Line numbers (requires index)
+rx samples /var/log/app.log -b 12345,67890 --context=3   # Byte offsets with context
+rx samples /var/log/app.log -l 100,200 --context=5       # Line numbers with context
+
+# Ranges (get exact lines, ignores context)
+rx samples /var/log/app.log -l 100-200                   # Lines 100-200 inclusive
+rx samples /var/log/app.log -b 1000-5000                 # Lines covering byte range
+
+# Negative offsets (count from end of file)
+rx samples /var/log/app.log -l -1 --context=3            # Last line with context
+rx samples /var/log/app.log -l -5,-1                     # 5th from end and last line
+
+# Mix single values and ranges
+rx samples /var/log/app.log -l 50,100-200 --context=2    # Line 50 with context + lines 100-200
 ```
 
 ### `rx serve`
@@ -372,6 +383,12 @@ curl "http://localhost:8000/v1/analyse?path=/var/log/app.log.gz"
 
 # Get samples (use lines parameter, not offsets)
 curl "http://localhost:8000/v1/samples?path=/var/log/syslog.1.gz&lines=100,200&context=3"
+
+# Get samples with line ranges (ignores context, returns exact lines)
+curl "http://localhost:8000/v1/samples?path=/var/log/app.log&lines=100-200"
+
+# Get samples with negative offsets (count from end of file)
+curl "http://localhost:8000/v1/samples?path=/var/log/app.log&lines=-1,-5&context=2"
 
 # Start background compression task
 curl -X POST "http://localhost:8000/v1/compress" \

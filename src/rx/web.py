@@ -751,6 +751,159 @@ async def analyse(
         raise HTTPException(status_code=500, detail=f'Internal error: {e!s}')
 
 
+def parse_offset_or_range(value: str) -> tuple[int, int | None]:
+    """Parse an offset string that can be either a single number or a range.
+
+    Args:
+        value: String like "100", "-5" (negative index), or "100-200" (range)
+
+    Returns:
+        Tuple of (start, end) where end is None for single values.
+        Negative single values are allowed (will be converted later based on file size).
+        Negative values in ranges are NOT allowed.
+
+    Raises:
+        ValueError: If the format is invalid
+    """
+    value = value.strip()
+
+    # Try to parse as single integer first (handles both positive and negative numbers)
+    try:
+        num = int(value)
+        # Allow negative numbers for single values (will be converted later based on file size)
+        return (num, None)
+    except ValueError:
+        # If it contains a dash and isn't a simple negative number, try parsing as range
+        if '-' in value and not value.startswith('-'):
+            # Range format: "100-200"
+            parts = value.split('-')
+            if len(parts) != 2:
+                raise ValueError(f'Invalid range format: {value}. Expected format: START-END')
+            try:
+                start = int(parts[0])
+                end = int(parts[1])
+            except ValueError:
+                raise ValueError(f'Invalid range format: {value}. Both values must be integers')
+
+            # Ranges cannot have negative values
+            if start < 0 or end < 0:
+                raise ValueError(f'Invalid range: {value}. Ranges cannot contain negative values')
+            if start > end:
+                raise ValueError(f'Invalid range: {value}. Start must be <= end')
+            return (start, end)
+        else:
+            # Re-raise the original error for invalid integers
+            raise ValueError(f'Invalid offset: {value}. Must be an integer or range (e.g., 100-200)')
+
+
+def get_lines_for_byte_range(path: str, start_offset: int, end_offset: int, index) -> list[str]:
+    """Get all lines that overlap with a byte offset range.
+
+    Efficiently reads only the required portion of the file using seek.
+    Returns lines from the first line containing start_offset to the last line containing end_offset.
+    """
+    from rx.index import calculate_line_info_for_offsets
+
+    # Get line info for both offsets in a single pass
+    line_infos = calculate_line_info_for_offsets(path, [start_offset, end_offset], index)
+
+    start_info = line_infos.get(start_offset)
+    end_info = line_infos.get(end_offset)
+
+    if not start_info or not end_info or start_info.line_number == -1 or end_info.line_number == -1:
+        return []
+
+    # Now we can seek directly to the start line and read only what we need
+    result = []
+    with open(path, 'rb') as f:
+        f.seek(start_info.line_start_offset)
+
+        # Read from start line's beginning to end line's end
+        bytes_to_read = end_info.line_end_offset - start_info.line_start_offset
+        content = f.read(bytes_to_read)
+
+    # Decode and split into lines
+    decoded = content.decode('utf-8', errors='replace')
+    # Split on newlines and strip trailing newline chars
+    for line in decoded.split('\n'):
+        # Handle \r\n line endings
+        stripped = line.rstrip('\r')
+        result.append(stripped)
+
+    # Remove the last empty element if content ended with newline
+    if result and result[-1] == '':
+        result.pop()
+
+    return result
+
+
+def get_line_range(path: str, start_line: int, end_line: int) -> list[str]:
+    """Get lines from start_line to end_line (inclusive, 1-based).
+
+    Efficiently reads only the required lines without loading the entire file.
+
+    Args:
+        path: File path
+        start_line: Starting line number (1-based)
+        end_line: Ending line number (1-based, inclusive)
+
+    Returns:
+        List of lines in the range
+    """
+    # Validate line numbers
+    if start_line < 1 or end_line < 1:
+        return []
+
+    result = []
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for current_line, line in enumerate(f, 1):
+            if current_line > end_line:
+                break
+            if current_line >= start_line:
+                result.append(line.rstrip('\n\r'))
+
+    return result
+
+
+def get_total_line_count(path: str) -> int:
+    """Get total line count for a file using cached data or by counting.
+
+    Args:
+        path: File path
+
+    Returns:
+        Total number of lines in the file
+    """
+    from rx.analyse_cache import load_cache
+
+    # Try analysis cache first
+    cache_data = load_cache(path)
+    if cache_data and 'analysis_content' in cache_data and cache_data['analysis_content'].get('line_count'):
+        return cache_data['analysis_content']['line_count']
+
+    # Try index cache
+    if is_index_valid(path):
+        index_path = get_index_path(path)
+        file_index = load_index(index_path)
+        if file_index and file_index.line_index:
+            line_index = file_index.line_index
+            # Get the last indexed line number and offset
+            last_line, last_offset = line_index[-1]
+
+            # Count remaining lines after the last indexed position
+            remaining_lines = 0
+            with open(path, 'rb') as f:
+                f.seek(last_offset)
+                for _ in f:
+                    remaining_lines += 1
+
+            return last_line + remaining_lines - 1
+
+    # Fallback: count lines directly
+    with open(path, 'rb') as f:
+        return sum(1 for _ in f)
+
+
 @app.get(
     '/v1/samples',
     tags=['Context'],
@@ -765,8 +918,18 @@ async def analyse(
 )
 async def samples(
     path: str = Query(..., description='File path to read from', examples=['/var/log/app.log']),
-    offsets: str = Query(None, description='Comma-separated list of byte offsets', examples=['123,456,789']),
-    lines: str = Query(None, description='Comma-separated list of line numbers (1-based)', examples=['100,200,300']),
+    offsets: str = Query(
+        None,
+        description='Comma-separated byte offsets or ranges. Single offset (1234) gets context. '
+        'Negative offset (-100) counts from end of file. Range (1000-2000) gets exact lines covering those bytes.',
+        examples=['123,456,789', '1000-2000', '-100'],
+    ),
+    lines: str = Query(
+        None,
+        description='Comma-separated line numbers or ranges (1-based). Single line (100) gets context. '
+        'Negative line (-5) counts from end of file. Range (100-200) gets exact lines.',
+        examples=['100,200,300', '100-200', '-1,-5'],
+    ),
     context: int = Query(None, description='Number of context lines before and after (sets both)', ge=0, examples=[3]),
     before_context: int = Query(None, description='Number of lines before each offset', ge=0, examples=[2]),
     after_context: int = Query(None, description='Number of lines after each offset', ge=0, examples=[5]),
@@ -776,19 +939,32 @@ async def samples(
 
     Use this endpoint to view the actual content around matches found by `/trace`.
 
+    **Parameters:**
     - **path**: Path to the file
-    - **offsets**: Comma-separated byte offsets (e.g., "123,456,789") - mutually exclusive with lines
-    - **lines**: Comma-separated line numbers (e.g., "100,200,300") - mutually exclusive with offsets
+    - **offsets**: Comma-separated byte offsets or ranges - mutually exclusive with lines
+      - Single offset: `123` - gets context lines around byte offset 123
+      - Negative offset: `-100` - counts from end of file (-1 = last byte)
+      - Range: `1000-2000` - gets all lines covering byte range, ignores context
+    - **lines**: Comma-separated line numbers or ranges (1-based) - mutually exclusive with offsets
+      - Single line: `100` - gets context lines around line 100
+      - Negative line: `-1` - last line, `-5` - 5th from end
+      - Range: `100-200` - gets exactly lines 100-200, ignores context
     - **context**: Set both before and after context (default: 3)
     - **before_context**: Override lines before (default: 3)
     - **after_context**: Override lines after (default: 3)
 
-    Returns a dictionary mapping each offset/line to its context lines.
+    **Notes:**
+    - Ranges ignore context settings and return exact lines
+    - Negative values are converted based on file size (bytes) or line count (lines)
+    - Ranges cannot contain negative values
 
-    Examples:
+    **Examples:**
     ```
-    GET /samples?path=data.txt&offsets=100,200&context=2
-    GET /samples?path=data.txt&lines=50,100,150&context=3
+    GET /v1/samples?path=data.txt&offsets=100,200&context=2
+    GET /v1/samples?path=data.txt&lines=50,100,150&context=3
+    GET /v1/samples?path=data.txt&lines=100-200
+    GET /v1/samples?path=data.txt&lines=-1,-5&context=2
+    GET /v1/samples?path=data.txt&offsets=1000-5000
     ```
     """
     if not app.state.rg:
@@ -831,26 +1007,25 @@ async def samples(
             detail="Byte offsets are not supported for compressed files. Use 'lines' parameter instead.",
         )
 
-    # Parse offsets or lines
-    offset_list: list[int] = []
-    line_list: list[int] = []
+    # Parse offsets or lines (supports ranges and negative values)
+    parsed_values: list[tuple[int, int | None]] = []
     use_lines = False
 
     if offsets:
         try:
-            offset_list = [int(o.strip()) for o in offsets.split(',')]
-        except ValueError:
+            parsed_values = [parse_offset_or_range(o) for o in offsets.split(',')]
+        except ValueError as e:
             prom.record_error('invalid_offsets')
             prom.record_http_response('GET', '/v1/samples', 400)
-            raise HTTPException(status_code=400, detail='Invalid offsets format. Expected comma-separated integers.')
+            raise HTTPException(status_code=400, detail=f'Invalid offsets format: {e}')
     else:
         use_lines = True
         try:
-            line_list = [int(ln.strip()) for ln in lines.split(',')]
-        except ValueError:
+            parsed_values = [parse_offset_or_range(ln) for ln in lines.split(',')]
+        except ValueError as e:
             prom.record_error('invalid_lines')
             prom.record_http_response('GET', '/v1/samples', 400)
-            raise HTTPException(status_code=400, detail='Invalid lines format. Expected comma-separated integers.')
+            raise HTTPException(status_code=400, detail=f'Invalid lines format: {e}')
 
     before = before_context if before_context is not None else context if context is not None else 3
     after = after_context if after_context is not None else context if context is not None else 3
@@ -878,12 +1053,16 @@ async def samples(
     try:
         time_before = time()
 
-        # Handle compressed files separately
+        # Handle compressed files separately (no range/negative support yet)
         if file_is_compressed:
             # Build/load compressed index and get samples
             index_data = await anyio.to_thread.run_sync(get_or_build_compressed_index, path)
 
-            context_data: dict[int, list[str]] = {}
+            # For compressed files, extract simple line numbers (no ranges for now)
+            line_list = [start for start, end in parsed_values if end is None]
+
+            context_data: dict[str, list[str]] = {}
+            line_mapping: dict[str, int] = {}
             for line_num in line_list:
                 lines_content = await anyio.to_thread.run_sync(
                     partial(
@@ -892,10 +1071,11 @@ async def samples(
                         line_number=line_num,
                         context_before=before,
                         context_after=after,
-                        index_data=index_data,
+                        index_data=file_index,
                     )
                 )
-                context_data[line_num] = lines_content
+                context_data[str(line_num)] = lines_content
+                line_mapping[str(line_num)] = -1  # No byte offsets for compressed
 
             num_items = len(line_list)
             duration = time() - time_before
@@ -908,75 +1088,124 @@ async def samples(
             return {
                 'path': path,
                 'offsets': {},
-                'lines': {str(ln): -1 for ln in line_list},  # No byte offsets for compressed
+                'lines': line_mapping,
                 'before_context': before,
                 'after_context': after,
-                'samples': {str(k): v for k, v in context_data.items()},
+                'samples': context_data,
                 'is_compressed': True,
                 'compression_format': compression_format.value,
             }
 
         # Regular file handling
         # Load index once for mapping calculations
-        index_path = get_index_path(path)
-        index_data = await anyio.to_thread.run_sync(load_index, index_path)
+        index_path_val = get_index_path(path)
+        file_index = await anyio.to_thread.run_sync(load_index, index_path_val)
+
+        # Get file size for negative byte offset conversion
+        file_size = os.path.getsize(path)
+
+        # Get total line count for negative line offset conversion (only if needed)
+        total_lines = None
+        if use_lines:
+            needs_total_lines = any(start < 0 for start, end in parsed_values if end is None)
+            if needs_total_lines:
+                total_lines = await anyio.to_thread.run_sync(get_total_line_count, path)
+
+        context_data = {}
+        offset_mapping = {}
+        line_mapping = {}
 
         if use_lines:
-            context_data = await anyio.to_thread.run_sync(
-                partial(
-                    get_context_by_lines,
-                    filename=path,
-                    line_numbers=line_list,
-                    before_context=before,
-                    after_context=after,
-                )
-            )
-            num_items = len(line_list)
+            # Line offset mode - handle both single lines and ranges
+            for start, end in parsed_values:
+                # Convert negative line numbers to positive
+                if end is None and start < 0:
+                    # Negative single line - convert using total line count
+                    # -1 means last line, -2 means second to last, etc.
+                    start = total_lines + start + 1
+                    if start < 1:
+                        start = 1  # Clamp to first line
 
-            # Calculate byte offsets for each line number
-            line_to_offset = {}
-            for line_num in line_list:
-                byte_offset = await anyio.to_thread.run_sync(
-                    partial(
-                        calculate_exact_offset_for_line,
-                        filename=path,
-                        target_line=line_num,
-                        index_data=index_data,
+                if end is None:
+                    # Single line - use context
+                    line_context = await anyio.to_thread.run_sync(
+                        partial(
+                            get_context_by_lines,
+                            filename=path,
+                            line_numbers=[start],
+                            before_context=before,
+                            after_context=after,
+                        )
                     )
-                )
-                line_to_offset[str(line_num)] = byte_offset
-
-            offset_mapping = {}
-            line_mapping = line_to_offset
+                    context_data.update({str(k): v for k, v in line_context.items()})
+                    byte_offset_val = await anyio.to_thread.run_sync(
+                        partial(
+                            calculate_exact_offset_for_line,
+                            filename=path,
+                            target_line=start,
+                            index=file_index,
+                        )
+                    )
+                    line_mapping[str(start)] = byte_offset_val
+                else:
+                    # Range - get exact lines, ignore context
+                    range_key = f'{start}-{end}'
+                    range_lines = await anyio.to_thread.run_sync(partial(get_line_range, path, start, end))
+                    context_data[range_key] = range_lines
+                    # For ranges, byte offset is not meaningful - use -1 to skip expensive calculation
+                    line_mapping[range_key] = -1
         else:
-            context_data = await anyio.to_thread.run_sync(
-                partial(
-                    get_context,
-                    filename=path,
-                    offsets=offset_list,
-                    before_context=before,
-                    after_context=after,
-                )
-            )
-            num_items = len(offset_list)
+            # Byte offset mode - handle both single offsets and ranges
+            for start, end in parsed_values:
+                # Convert negative offsets to positive
+                if end is None and start < 0:
+                    # Negative single offset - convert using file size
+                    # -1 means last byte (file_size - 1), -2 means file_size - 2, etc.
+                    start = file_size + start
+                    if start < 0:
+                        start = 0  # Clamp to start of file
 
-            # Calculate line numbers for each byte offset
-            offset_to_line = {}
-            for offset in offset_list:
-                line_num = await anyio.to_thread.run_sync(
-                    partial(
-                        calculate_exact_line_for_offset,
-                        filename=path,
-                        target_offset=offset,
-                        index_data=index_data,
+                if end is None:
+                    # Single offset - use context
+                    offset_context = await anyio.to_thread.run_sync(
+                        partial(
+                            get_context,
+                            filename=path,
+                            offsets=[start],
+                            before_context=before,
+                            after_context=after,
+                        )
                     )
-                )
-                offset_to_line[str(offset)] = line_num
-
-            offset_mapping = offset_to_line
-            line_mapping = {}
+                    context_data.update({str(k): v for k, v in offset_context.items()})
+                    line_num = await anyio.to_thread.run_sync(
+                        partial(
+                            calculate_exact_line_for_offset,
+                            filename=path,
+                            target_offset=start,
+                            index=file_index,
+                        )
+                    )
+                    offset_mapping[str(start)] = line_num
+                else:
+                    # Range - get exact lines covering the byte range, ignore context
+                    range_key = f'{start}-{end}'
+                    range_lines = await anyio.to_thread.run_sync(
+                        partial(get_lines_for_byte_range, path, start, end, file_index)
+                    )
+                    context_data[range_key] = range_lines
+                    # For ranges, we store the start line number
+                    start_line = await anyio.to_thread.run_sync(
+                        partial(
+                            calculate_exact_line_for_offset,
+                            filename=path,
+                            target_offset=start,
+                            index=file_index,
+                        )
+                    )
+                    offset_mapping[range_key] = start_line
 
         duration = time() - time_before
+        num_items = len(parsed_values)
 
         # Record metrics
         prom.record_samples_request(
@@ -990,20 +1219,20 @@ async def samples(
             'lines': line_mapping,
             'before_context': before,
             'after_context': after,
-            'samples': {str(k): v for k, v in context_data.items()},
+            'samples': context_data,
             'is_compressed': False,
             'compression_format': None,
         }
     except ValueError as e:
         prom.record_error('invalid_context')
-        num_items = len(line_list) if use_lines else len(offset_list)
+        num_items = len(parsed_values)
         prom.record_samples_request('error', 0, num_items, before, after)
         prom.record_http_response('GET', '/v1/samples', 400)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f'Unexpected error: {e!s}')
         prom.record_error('internal_error')
-        num_items = len(line_list) if use_lines else len(offset_list)
+        num_items = len(parsed_values)
         prom.record_samples_request('error', 0, num_items, before, after)
         prom.record_http_response('GET', '/v1/samples', 500)
         raise HTTPException(status_code=500, detail=f'Internal error: {e!s}')
@@ -1437,9 +1666,9 @@ def get_entry_metadata(entry_path: str, entry_name: str, is_dir: bool) -> dict:
                 # Try to get line count from index
                 try:
                     index_path = get_index_path(entry_path)
-                    index_data = load_index(index_path)
-                    if index_data and 'analysis' in index_data:
-                        result['line_count'] = index_data['analysis'].get('line_count')
+                    file_index = load_index(index_path)
+                    if file_index and file_index.analysis:
+                        result['line_count'] = file_index.analysis.line_count
                 except Exception:
                     pass
             else:

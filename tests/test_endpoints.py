@@ -391,3 +391,162 @@ class TestSamplesEndpoint:
         finally:
             if os.path.exists(binary_file):
                 os.unlink(binary_file)
+
+
+class TestSamplesEndpointRanges:
+    """Tests for the /v1/samples endpoint with range support"""
+
+    @pytest.fixture
+    def range_test_file(self, temp_dir):
+        """Create a test file with 20 numbered lines for range testing"""
+        lines = [f'Line {i}: Content for line number {i}\n' for i in range(1, 21)]
+        temp_path = os.path.join(temp_dir, 'range_test.txt')
+        with open(temp_path, 'w') as f:
+            f.writelines(lines)
+        yield temp_path
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+    def test_samples_line_range_basic(self, client, range_test_file):
+        """Test samples endpoint with line range"""
+        response = client.get('/v1/samples', params={'path': range_test_file, 'lines': '5-10'})
+        assert response.status_code == 200
+        data = response.json()
+        # Range key should be in samples
+        assert '5-10' in data['samples']
+        # Should have exactly 6 lines (5, 6, 7, 8, 9, 10)
+        assert len(data['samples']['5-10']) == 6
+        # Verify content
+        assert 'Line 5:' in data['samples']['5-10'][0]
+        assert 'Line 10:' in data['samples']['5-10'][5]
+
+    def test_samples_line_range_ignores_context(self, client, range_test_file):
+        """Test that line ranges ignore context parameters"""
+        response = client.get('/v1/samples', params={'path': range_test_file, 'lines': '10-12', 'context': 5})
+        assert response.status_code == 200
+        data = response.json()
+        # Should have exactly 3 lines (10, 11, 12), not 8 (10-5 to 12+5)
+        assert '10-12' in data['samples']
+        assert len(data['samples']['10-12']) == 3
+
+    def test_samples_mixed_single_and_range(self, client, range_test_file):
+        """Test mixing single line with range"""
+        response = client.get('/v1/samples', params={'path': range_test_file, 'lines': '3,10-12', 'context': 1})
+        assert response.status_code == 200
+        data = response.json()
+        # Single line 3 should have context
+        assert '3' in data['samples']
+        assert len(data['samples']['3']) == 3  # line 2, 3, 4
+        # Range should have exact lines
+        assert '10-12' in data['samples']
+        assert len(data['samples']['10-12']) == 3
+
+    def test_samples_line_range_mapping(self, client, range_test_file):
+        """Test that line range returns mapping entry"""
+        response = client.get('/v1/samples', params={'path': range_test_file, 'lines': '5-7'})
+        assert response.status_code == 200
+        data = response.json()
+        # Range key should be in lines mapping
+        assert '5-7' in data['lines']
+        # For ranges, byte offset is -1 (not computed for performance)
+        assert data['lines']['5-7'] == -1
+
+    def test_samples_byte_range_basic(self, client, range_test_file):
+        """Test samples endpoint with byte offset range"""
+        # Get file size first to create a reasonable range
+        response = client.get('/v1/samples', params={'path': range_test_file, 'offsets': '0-100'})
+        assert response.status_code == 200
+        data = response.json()
+        # Range key should be in samples
+        assert '0-100' in data['samples']
+        # Should have some lines
+        assert len(data['samples']['0-100']) > 0
+
+    def test_samples_invalid_range_format(self, client, range_test_file):
+        """Test invalid range format"""
+        response = client.get('/v1/samples', params={'path': range_test_file, 'lines': '10-20-30'})
+        assert response.status_code == 400
+        assert 'invalid' in response.json()['detail'].lower()
+
+    def test_samples_invalid_range_order(self, client, range_test_file):
+        """Test range with start > end"""
+        response = client.get('/v1/samples', params={'path': range_test_file, 'lines': '15-10'})
+        assert response.status_code == 400
+        assert 'start must be' in response.json()['detail'].lower()
+
+    def test_samples_range_beyond_file(self, client, range_test_file):
+        """Test range that extends beyond file end"""
+        response = client.get('/v1/samples', params={'path': range_test_file, 'lines': '18-100'})
+        assert response.status_code == 200
+        data = response.json()
+        # Should return lines 18-20 (clamped)
+        assert '18-100' in data['samples']
+        assert len(data['samples']['18-100']) == 3  # lines 18, 19, 20
+
+
+class TestSamplesEndpointNegativeOffsets:
+    """Tests for the /v1/samples endpoint with negative offset support"""
+
+    @pytest.fixture
+    def negative_test_file(self, temp_dir):
+        """Create a test file with 10 numbered lines for negative offset testing"""
+        lines = [f'Line {i}: Test content\n' for i in range(1, 11)]
+        temp_path = os.path.join(temp_dir, 'negative_test.txt')
+        with open(temp_path, 'w') as f:
+            f.writelines(lines)
+        yield temp_path
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+    def test_samples_negative_line_last(self, client, negative_test_file):
+        """Test -1 gets last line"""
+        response = client.get('/v1/samples', params={'path': negative_test_file, 'lines': '-1', 'context': 0})
+        assert response.status_code == 200
+        data = response.json()
+        # Should have line 10 (the last line)
+        assert '10' in data['samples']
+        assert 'Line 10:' in data['samples']['10'][0]
+
+    def test_samples_negative_line_fifth_from_end(self, client, negative_test_file):
+        """Test -5 gets 5th line from end"""
+        response = client.get('/v1/samples', params={'path': negative_test_file, 'lines': '-5', 'context': 0})
+        assert response.status_code == 200
+        data = response.json()
+        # -5 means 5th from end = line 6 (10 - 5 + 1 = 6)
+        assert '6' in data['samples']
+        assert 'Line 6:' in data['samples']['6'][0]
+
+    def test_samples_negative_line_with_context(self, client, negative_test_file):
+        """Test negative line with context"""
+        response = client.get('/v1/samples', params={'path': negative_test_file, 'lines': '-1', 'context': 2})
+        assert response.status_code == 200
+        data = response.json()
+        # Should have lines 8, 9, 10 (2 before + target)
+        assert '10' in data['samples']
+        assert len(data['samples']['10']) == 3
+
+    def test_samples_mixed_positive_negative(self, client, negative_test_file):
+        """Test mixing positive and negative line numbers"""
+        response = client.get('/v1/samples', params={'path': negative_test_file, 'lines': '1,-1', 'context': 0})
+        assert response.status_code == 200
+        data = response.json()
+        # Should have both first and last lines
+        assert '1' in data['samples']
+        assert '10' in data['samples']
+        assert 'Line 1:' in data['samples']['1'][0]
+        assert 'Line 10:' in data['samples']['10'][0]
+
+    def test_samples_negative_byte_offset(self, client, negative_test_file):
+        """Test negative byte offset"""
+        response = client.get('/v1/samples', params={'path': negative_test_file, 'offsets': '-50', 'context': 0})
+        assert response.status_code == 200
+        data = response.json()
+        # Should have some content from near the end of file
+        assert len(data['samples']) == 1
+
+    def test_samples_negative_in_range_rejected(self, client, negative_test_file):
+        """Test that negative values in ranges are rejected"""
+        response = client.get('/v1/samples', params={'path': negative_test_file, 'lines': '-5-10'})
+        assert response.status_code == 400
+        # Should reject negative values in ranges
+        assert 'invalid' in response.json()['detail'].lower()

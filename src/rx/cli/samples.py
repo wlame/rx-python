@@ -10,8 +10,10 @@ from rx.compressed_index import get_decompressed_content_at_line, get_or_build_c
 from rx.compression import CompressionFormat, detect_compression, is_compressed
 from rx.file_utils import get_context, get_context_by_lines, is_text_file
 from rx.index import (
+    LineInfo,
     calculate_exact_line_for_offset,
     calculate_exact_offset_for_line,
+    calculate_line_info_for_offsets,
     create_index_file,
     get_index_path,
     is_index_valid,
@@ -65,29 +67,50 @@ def parse_offset_or_range(value: str) -> tuple[int, int | None]:
             raise ValueError(f'Invalid offset: {value}. Must be an integer or range (e.g., 100-200)')
 
 
-def get_lines_for_byte_range(path: str, start_offset: int, end_offset: int, index_data) -> list[str]:
+def get_lines_for_byte_range(path: str, start_offset: int, end_offset: int, index_data: dict | None) -> list[str]:
     """Get all lines that overlap with a byte offset range.
 
-    For each offset in the range, find which line contains it and include that line.
+    Efficiently reads only the required portion of the file using seek.
     Returns lines from the first line containing start_offset to the last line containing end_offset.
     """
-    # Find line numbers for start and end offsets
-    start_line = calculate_exact_line_for_offset(path, start_offset, index_data)
-    end_line = calculate_exact_line_for_offset(path, end_offset, index_data)
 
-    # Read the file and extract lines
-    with open(path, encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
+    # Get line info for both offsets in a single pass
+    line_infos: dict[int, LineInfo] = calculate_line_info_for_offsets(path, [start_offset, end_offset], index_data)
 
-    # Return lines from start_line to end_line (1-based to 0-based conversion)
-    if start_line > len(lines) or end_line > len(lines):
+    start_info = line_infos.get(start_offset)
+    end_info = line_infos.get(end_offset)
+
+    if not start_info or not end_info or start_info.line_number == -1 or end_info.line_number == -1:
         return []
 
-    return [line.rstrip('\n\r') for line in lines[start_line - 1 : end_line]]
+    # Now we can seek directly to the start line and read only what we need
+    result = []
+    with open(path, 'rb') as f:
+        f.seek(start_info.line_start_offset)
+
+        # Read from start line's beginning to end line's end
+        bytes_to_read = end_info.line_end_offset - start_info.line_start_offset
+        content = f.read(bytes_to_read)
+
+    # Decode and split into lines
+    decoded = content.decode('utf-8', errors='replace')
+    # Split on newlines and strip trailing newline chars
+    for line in decoded.split('\n'):
+        # Handle \r\n line endings
+        stripped = line.rstrip('\r')
+        result.append(stripped)
+
+    # Remove the last empty element if content ended with newline
+    if result and result[-1] == '':
+        result.pop()
+
+    return result
 
 
 def get_line_range(path: str, start_line: int, end_line: int) -> list[str]:
     """Get lines from start_line to end_line (inclusive, 1-based).
+
+    Efficiently reads only the required lines without loading the entire file.
 
     Args:
         path: File path
@@ -97,19 +120,19 @@ def get_line_range(path: str, start_line: int, end_line: int) -> list[str]:
     Returns:
         List of lines in the range
     """
-    with open(path, encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
-
     # Validate line numbers
     if start_line < 1 or end_line < 1:
         return []
-    if start_line > len(lines):
-        return []
 
-    # Clamp end_line to file length
-    actual_end = min(end_line, len(lines))
+    result = []
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for current_line, line in enumerate(f, 1):
+            if current_line > end_line:
+                break
+            if current_line >= start_line:
+                result.append(line.rstrip('\n\r'))
 
-    return [line.rstrip('\n\r') for line in lines[start_line - 1 : actual_end]]
+    return result
 
 
 def get_total_line_count(path: str) -> int:
@@ -141,24 +164,23 @@ def get_total_line_count(path: str) -> int:
     # Strategy 2: Try index cache
     if is_index_valid(path):
         index_path = get_index_path(path)
-        index_data = load_index(index_path)
-        if index_data and 'line_index' in index_data:
-            line_index = index_data['line_index']
-            if line_index:
-                # Get the last indexed line number and offset
-                last_line, last_offset = line_index[-1]
+        file_index = load_index(index_path)
+        if file_index and file_index.line_index:
+            line_index = file_index.line_index
+            # Get the last indexed line number and offset
+            last_line, last_offset = line_index[-1]
 
-                # Count remaining lines after the last indexed position
-                remaining_lines = 0
-                with open(path, 'rb') as f:
-                    f.seek(last_offset)
-                    # Read from last indexed position to end
-                    for _ in f:
-                        remaining_lines += 1
+            # Count remaining lines after the last indexed position
+            remaining_lines = 0
+            with open(path, 'rb') as f:
+                f.seek(last_offset)
+                # Read from last indexed position to end
+                for _ in f:
+                    remaining_lines += 1
 
-                # Total = last indexed line + remaining lines - 1
-                # (subtract 1 because last_line is already counted)
-                return last_line + remaining_lines - 1
+            # Total = last indexed line + remaining lines - 1
+            # (subtract 1 because last_line is already counted)
+            return last_line + remaining_lines - 1
 
     # Strategy 3 & 4: For files without cache, decide based on size
     file_size = os.path.getsize(path)
@@ -169,17 +191,16 @@ def get_total_line_count(path: str) -> int:
         click.echo('Building index for large file...', err=True)
         create_index_file(path)
         # Now retry with index
-        index_data = load_index(get_index_path(path))
-        if index_data and 'line_index' in index_data:
-            line_index = index_data['line_index']
-            if line_index:
-                last_line, last_offset = line_index[-1]
-                remaining_lines = 0
-                with open(path, 'rb') as f:
-                    f.seek(last_offset)
-                    for _ in f:
-                        remaining_lines += 1
-                return last_line + remaining_lines - 1
+        file_index = load_index(get_index_path(path))
+        if file_index and file_index.line_index:
+            line_index = file_index.line_index
+            last_line, last_offset = line_index[-1]
+            remaining_lines = 0
+            with open(path, 'rb') as f:
+                f.seek(last_offset)
+                for _ in f:
+                    remaining_lines += 1
+            return last_line + remaining_lines - 1
     else:
         # Small file: run analysis
         click.echo('Analyzing file...', err=True)
@@ -509,9 +530,8 @@ def samples_command(
                     range_key = f'{start}-{end}'
                     lines = get_line_range(path, start, end)
                     context_data[range_key] = lines
-                    # For ranges, we store the byte offset of the start line
-                    byte_offset_val = calculate_exact_offset_for_line(path, start, index_data)
-                    line_to_offset[range_key] = byte_offset_val
+                    # For ranges, byte offset is not meaningful - use -1 to skip expensive calculation
+                    line_to_offset[range_key] = -1
 
             response = SamplesResponse(
                 path=path,

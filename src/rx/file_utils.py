@@ -779,19 +779,19 @@ def get_context_by_lines(
     # For large files, use index
     index_path = get_index_path(filename)
     if is_index_valid(filename):
-        index_data = load_index(index_path)
+        file_index = load_index(index_path)
     else:
         # Create index if it doesn't exist
         logger.info(f'Creating index for large file: {filename}')
-        index_data = create_index_file(filename)
+        file_index = create_index_file(filename)
 
-    if index_data is None:
+    if file_index is None:
         # Fall back to simple method if index creation failed
         logger.warning(f'Index unavailable for {filename}, falling back to simple method')
         return _get_context_by_lines_simple(filename, line_numbers, before_context, after_context)
 
-    line_index = index_data.get('line_index', [[1, 0]])
-    total_lines = index_data.get('analysis', {}).get('line_count', 0)
+    line_index = file_index.line_index if file_index.line_index else [[1, 0]]
+    total_lines = file_index.analysis.line_count if file_index.analysis else 0
 
     max_line_length = LINE_SIZE_ASSUMPTION_KB * 1024
 
@@ -811,8 +811,7 @@ def get_context_by_lines(
         lines_to_read = before_context + 1 + after_context + lines_to_skip
 
         # Use average line length from analysis if available, with safety margin
-        analysis = index_data.get('analysis', {})
-        avg_line_length = analysis.get('line_length_avg', 100)
+        avg_line_length = file_index.analysis.line_length_avg if file_index.analysis else 100
 
         # Use a reasonable multiplier on average (4x) rather than adding max line length
         # This handles normal variability without exploding memory for files with outlier long lines

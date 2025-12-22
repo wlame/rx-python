@@ -2,9 +2,360 @@
 
 import re
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+
+# =============================================================================
+# Index Models
+# =============================================================================
+
+
+class IndexType(str, Enum):
+    """Type of file index."""
+
+    REGULAR = 'regular'  # Regular text file index
+    COMPRESSED = 'compressed'  # Compressed file index (gzip, xz, bz2)
+    SEEKABLE_ZSTD = 'seekable_zstd'  # Seekable zstd index
+
+
+class IndexAnalysis(BaseModel):
+    """Analysis statistics stored within an index.
+
+    These are computed during index creation for text files.
+    """
+
+    line_count: int | None = Field(default=None, description='Total number of lines')
+    empty_line_count: int | None = Field(default=None, description='Number of empty lines')
+    line_length_max: int | None = Field(default=None, description='Maximum line length in bytes')
+    line_length_avg: float | None = Field(default=None, description='Average line length')
+    line_length_median: float | None = Field(default=None, description='Median line length')
+    line_length_p95: float | None = Field(default=None, description='95th percentile line length')
+    line_length_p99: float | None = Field(default=None, description='99th percentile line length')
+    line_length_stddev: float | None = Field(default=None, description='Standard deviation of line lengths')
+    line_length_max_line_number: int | None = Field(default=None, description='Line number of longest line')
+    line_length_max_byte_offset: int | None = Field(default=None, description='Byte offset of longest line')
+    line_ending: str | None = Field(default=None, description='Line ending type: LF, CRLF, CR, or mixed')
+
+
+class FrameLineInfo(BaseModel):
+    """Frame information with line mapping for seekable zstd files."""
+
+    index: int = Field(..., description='Frame index (0-based)')
+    compressed_offset: int = Field(..., description='Byte offset of frame in compressed file')
+    compressed_size: int = Field(..., description='Size of compressed frame in bytes')
+    decompressed_offset: int = Field(..., description='Byte offset in decompressed stream')
+    decompressed_size: int = Field(..., description='Size of decompressed frame in bytes')
+    first_line: int = Field(..., description='First line number in this frame (1-based)')
+    last_line: int = Field(..., description='Last line number in this frame (1-based)')
+    line_count: int = Field(..., description='Number of lines in this frame')
+
+
+class FileIndex(BaseModel):
+    """Unified file index model.
+
+    This model represents indexes for all file types:
+    - Regular text files: line_index contains [(line_number, byte_offset), ...]
+    - Compressed files: line_index contains [(line_number, decompressed_offset), ...]
+    - Seekable zstd: frames contains frame info, line_index contains [(line, offset, frame_idx), ...]
+
+    Fields are nullable to accommodate different index types.
+    """
+
+    # Version and type
+    version: int = Field(..., description='Index format version')
+    index_type: IndexType = Field(default=IndexType.REGULAR, description='Type of index')
+
+    # Source file information
+    source_path: str = Field(..., description='Absolute path to source file')
+    source_modified_at: str = Field(..., description='Source file modification time (ISO format)')
+    source_size_bytes: int = Field(..., description='Source file size in bytes')
+
+    # Creation metadata
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description='Index creation time')
+    build_time_seconds: float | None = Field(default=None, description='Time to build index in seconds')
+
+    # Regular file index fields
+    index_step_bytes: int | None = Field(default=None, description='Bytes between index checkpoints')
+    analysis: IndexAnalysis | None = Field(default=None, description='Analysis statistics for text files')
+
+    # Line index - format varies by index type:
+    # - Regular: list of [line_number, byte_offset]
+    # - Compressed: list of [line_number, decompressed_offset]
+    # - Seekable zstd: list of [line_number, decompressed_offset, frame_index]
+    line_index: list[list[int]] = Field(default_factory=list, description='Line number to offset mapping')
+
+    # Compressed file fields
+    compression_format: str | None = Field(default=None, description='Compression format (gzip, zstd, xz, bz2)')
+    decompressed_size_bytes: int | None = Field(default=None, description='Decompressed size in bytes')
+    total_lines: int | None = Field(default=None, description='Total number of lines (for compressed files)')
+    line_sample_interval: int | None = Field(default=None, description='Lines between index samples')
+
+    # Seekable zstd specific fields
+    frame_count: int | None = Field(default=None, description='Number of frames in seekable zstd')
+    frame_size_target: int | None = Field(default=None, description='Target frame size in bytes')
+    frames: list[FrameLineInfo] | None = Field(default=None, description='Frame info for seekable zstd')
+
+    model_config = ConfigDict(extra='ignore')
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'FileIndex':
+        """Create FileIndex from a dictionary (loaded from JSON).
+
+        Handles conversion from legacy dict format.
+        """
+        # Determine index type from data
+        if 'frames' in data and data.get('frames'):
+            index_type = IndexType.SEEKABLE_ZSTD
+        elif 'compression_format' in data:
+            index_type = IndexType.COMPRESSED
+        else:
+            index_type = IndexType.REGULAR
+
+        # Handle source path field variations
+        source_path = data.get('source_path') or data.get('source_zst_path', '')
+
+        # Handle analysis as nested object or None
+        analysis_data = data.get('analysis')
+        analysis = IndexAnalysis(**analysis_data) if analysis_data else None
+
+        # Handle frames for seekable zstd
+        frames_data = data.get('frames')
+        frames = [FrameLineInfo(**f) for f in frames_data] if frames_data else None
+
+        return cls(
+            version=data.get('version', 1),
+            index_type=index_type,
+            source_path=source_path,
+            source_modified_at=data.get('source_modified_at') or data.get('source_zst_modified_at', ''),
+            source_size_bytes=data.get('source_size_bytes') or data.get('source_zst_size_bytes', 0),
+            created_at=data.get('created_at', ''),
+            build_time_seconds=data.get('build_time_seconds'),
+            index_step_bytes=data.get('index_step_bytes'),
+            analysis=analysis,
+            line_index=data.get('line_index', []),
+            compression_format=data.get('compression_format'),
+            decompressed_size_bytes=data.get('decompressed_size_bytes'),
+            total_lines=data.get('total_lines'),
+            line_sample_interval=data.get('line_sample_interval'),
+            frame_count=data.get('frame_count'),
+            frame_size_target=data.get('frame_size_target'),
+            frames=frames,
+        )
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization.
+
+        Maintains backward compatibility with legacy format.
+        """
+        result: dict[str, Any] = {
+            'version': self.version,
+            'source_path': self.source_path,
+            'source_modified_at': self.source_modified_at,
+            'source_size_bytes': self.source_size_bytes,
+            'created_at': self.created_at,
+            'line_index': self.line_index,
+        }
+
+        # Add type-specific fields
+        if self.index_type == IndexType.REGULAR:
+            if self.index_step_bytes is not None:
+                result['index_step_bytes'] = self.index_step_bytes
+            if self.analysis:
+                result['analysis'] = self.analysis.model_dump(exclude_none=True)
+
+        elif self.index_type == IndexType.COMPRESSED:
+            if self.compression_format:
+                result['compression_format'] = self.compression_format
+            if self.decompressed_size_bytes is not None:
+                result['decompressed_size_bytes'] = self.decompressed_size_bytes
+            if self.total_lines is not None:
+                result['total_lines'] = self.total_lines
+            if self.line_sample_interval is not None:
+                result['line_sample_interval'] = self.line_sample_interval
+            if self.build_time_seconds is not None:
+                result['build_time_seconds'] = self.build_time_seconds
+
+        elif self.index_type == IndexType.SEEKABLE_ZSTD:
+            # Use seekable zstd field names for compatibility
+            result['source_zst_path'] = self.source_path
+            result['source_zst_modified_at'] = self.source_modified_at
+            result['source_zst_size_bytes'] = self.source_size_bytes
+            if self.decompressed_size_bytes is not None:
+                result['decompressed_size_bytes'] = self.decompressed_size_bytes
+            if self.total_lines is not None:
+                result['total_lines'] = self.total_lines
+            if self.frame_count is not None:
+                result['frame_count'] = self.frame_count
+            if self.frame_size_target is not None:
+                result['frame_size_target'] = self.frame_size_target
+            if self.frames:
+                result['frames'] = [f.model_dump() for f in self.frames]
+
+        return result
+
+    def get_line_count(self) -> int | None:
+        """Get total line count from index.
+
+        Returns line count from the appropriate field based on index type.
+        """
+        if self.total_lines is not None:
+            return self.total_lines
+        if self.analysis and self.analysis.line_count is not None:
+            return self.analysis.line_count
+        return None
+
+
+class FileAnalysis(BaseModel):
+    """Complete file analysis result.
+
+    This model replaces the FileAnalysisState dataclass for external use.
+    It provides comprehensive information about an analyzed file.
+    """
+
+    # Identifiers
+    file_id: str = Field(..., description='Unique identifier for the file in this analysis')
+    filepath: str = Field(..., description='Absolute path to the file')
+
+    # Size information
+    size_bytes: int = Field(..., description='File size in bytes')
+    size_human: str = Field(..., description='Human-readable file size')
+
+    # File type
+    is_text: bool = Field(..., description='Whether file is a text file')
+
+    # Metadata
+    created_at: str | None = Field(default=None, description='File creation time (ISO format)')
+    modified_at: str | None = Field(default=None, description='File modification time (ISO format)')
+    permissions: str | None = Field(default=None, description='File permissions (octal)')
+    owner: str | None = Field(default=None, description='File owner')
+
+    # Text file metrics (only if is_text=True)
+    line_count: int | None = Field(default=None, description='Total number of lines')
+    empty_line_count: int | None = Field(default=None, description='Number of empty lines')
+    line_length_max: int | None = Field(default=None, description='Maximum line length in bytes')
+    line_length_avg: float | None = Field(default=None, description='Average line length')
+    line_length_median: float | None = Field(default=None, description='Median line length')
+    line_length_p95: float | None = Field(default=None, description='95th percentile line length')
+    line_length_p99: float | None = Field(default=None, description='99th percentile line length')
+    line_length_stddev: float | None = Field(default=None, description='Standard deviation of line lengths')
+
+    # Longest line info
+    line_length_max_line_number: int | None = Field(default=None, description='Line number of longest line')
+    line_length_max_byte_offset: int | None = Field(default=None, description='Byte offset of longest line')
+
+    # Line ending info
+    line_ending: str | None = Field(default=None, description='Line ending type: LF, CRLF, CR, or mixed')
+
+    # Compression information
+    is_compressed: bool = Field(default=False, description='Whether file is compressed')
+    compression_format: str | None = Field(default=None, description='Compression format if compressed')
+    is_seekable_zstd: bool = Field(default=False, description='Whether file is seekable zstd format')
+    compressed_size: int | None = Field(default=None, description='Compressed size in bytes')
+    decompressed_size: int | None = Field(default=None, description='Decompressed size in bytes')
+    compression_ratio: float | None = Field(default=None, description='Compression ratio')
+
+    # Index information
+    has_index: bool = Field(default=False, description='Whether file has an index')
+    index_path: str | None = Field(default=None, description='Path to index file')
+    index_valid: bool = Field(default=False, description='Whether index is valid')
+    index_checkpoint_count: int | None = Field(default=None, description='Number of index checkpoints')
+
+    # Custom metrics from plugins
+    custom_metrics: dict[str, Any] = Field(default_factory=dict, description='Custom analysis metrics')
+
+    model_config = ConfigDict(extra='ignore')
+
+    def to_cache_dict(self) -> dict:
+        """Convert to dictionary for caching.
+
+        Returns a dict suitable for storage in analysis cache.
+        """
+        return {
+            'file': self.file_id,
+            'size_bytes': self.size_bytes,
+            'size_human': self.size_human,
+            'is_text': self.is_text,
+            'created_at': self.created_at,
+            'modified_at': self.modified_at,
+            'permissions': self.permissions,
+            'owner': self.owner,
+            'line_count': self.line_count,
+            'empty_line_count': self.empty_line_count,
+            'line_length_max': self.line_length_max,
+            'line_length_avg': self.line_length_avg,
+            'line_length_median': self.line_length_median,
+            'line_length_p95': self.line_length_p95,
+            'line_length_p99': self.line_length_p99,
+            'line_length_stddev': self.line_length_stddev,
+            'line_length_max_line_number': self.line_length_max_line_number,
+            'line_length_max_byte_offset': self.line_length_max_byte_offset,
+            'line_ending': self.line_ending,
+            'custom_metrics': self.custom_metrics,
+            'is_compressed': self.is_compressed,
+            'compression_format': self.compression_format,
+            'is_seekable_zstd': self.is_seekable_zstd,
+            'compressed_size': self.compressed_size,
+            'decompressed_size': self.decompressed_size,
+            'compression_ratio': self.compression_ratio,
+            'has_index': self.has_index,
+            'index_path': self.index_path,
+            'index_valid': self.index_valid,
+            'index_checkpoint_count': self.index_checkpoint_count,
+        }
+
+    @classmethod
+    def from_cache_dict(cls, data: dict, file_id: str, filepath: str) -> 'FileAnalysis':
+        """Create FileAnalysis from cached dictionary.
+
+        Args:
+            data: Dictionary from cache
+            file_id: File identifier
+            filepath: File path
+
+        Returns:
+            FileAnalysis instance
+        """
+        return cls(
+            file_id=file_id,
+            filepath=filepath,
+            size_bytes=data.get('size_bytes', 0),
+            size_human=data.get('size_human', '0 B'),
+            is_text=data.get('is_text', False),
+            created_at=data.get('created_at'),
+            modified_at=data.get('modified_at'),
+            permissions=data.get('permissions'),
+            owner=data.get('owner'),
+            line_count=data.get('line_count'),
+            empty_line_count=data.get('empty_line_count'),
+            line_length_max=data.get('line_length_max'),
+            line_length_avg=data.get('line_length_avg'),
+            line_length_median=data.get('line_length_median'),
+            line_length_p95=data.get('line_length_p95'),
+            line_length_p99=data.get('line_length_p99'),
+            line_length_stddev=data.get('line_length_stddev'),
+            line_length_max_line_number=data.get('line_length_max_line_number'),
+            line_length_max_byte_offset=data.get('line_length_max_byte_offset'),
+            line_ending=data.get('line_ending'),
+            custom_metrics=data.get('custom_metrics', {}),
+            is_compressed=data.get('is_compressed', False),
+            compression_format=data.get('compression_format'),
+            is_seekable_zstd=data.get('is_seekable_zstd', False),
+            compressed_size=data.get('compressed_size'),
+            decompressed_size=data.get('decompressed_size'),
+            compression_ratio=data.get('compression_ratio'),
+            has_index=data.get('has_index', False),
+            index_path=data.get('index_path'),
+            index_valid=data.get('index_valid', False),
+            index_checkpoint_count=data.get('index_checkpoint_count'),
+        )
+
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
 
 
 def human_readable_size(size_bytes: int) -> str:
@@ -808,9 +1159,9 @@ class SamplesResponse(BaseModel):
                     if '-' in offset_str:
                         # Range format
                         if colorize:
-                            header = f'=== {CYAN}{self.path}{RESET}{GREY}:{RESET}{YELLOW}bytes {offset_str}{RESET} ==='
+                            header = f'=== {CYAN}{self.path}{RESET}{GREY}:{RESET}{YELLOW}{offset_str}{RESET} ==='
                         else:
-                            header = f'=== {self.path}:bytes {offset_str} ==='
+                            header = f'=== {self.path}:{offset_str} ==='
                     else:
                         # Single offset
                         offset = int(offset_str)
@@ -850,11 +1201,9 @@ class SamplesResponse(BaseModel):
                     if '-' in line_num_str:
                         # Range format
                         if colorize:
-                            header = (
-                                f'=== {CYAN}{self.path}{RESET}{GREY}:{RESET}{YELLOW}lines {line_num_str}{RESET} ==='
-                            )
+                            header = f'=== {CYAN}{self.path}{RESET}{GREY}:{RESET}{YELLOW}{line_num_str}{RESET} ==='
                         else:
-                            header = f'=== {self.path}:lines {line_num_str} ==='
+                            header = f'=== {self.path}:{line_num_str} ==='
                     else:
                         # Single line
                         line_num = int(line_num_str)
