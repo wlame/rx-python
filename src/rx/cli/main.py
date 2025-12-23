@@ -45,18 +45,18 @@ def cli(ctx):
 
     \b
     Commands:
-      rx <path> <pattern>     Trace files for patterns (default command)
-      rx analyse <path>       Analyze files (metadata, statistics)
-      rx check <pattern>      Analyze regex complexity
-      rx compress <path>      Create seekable zstd for optimized access
-      rx index <path>         Create/manage large file indexes
-      rx samples <path>       Get file content around byte offsets
-      rx serve               Start web API server
+      rx <pattern> [path ...]   Trace files for patterns (default command)
+      rx analyse <path>         Analyze files (metadata, statistics)
+      rx check <pattern>        Analyze regex complexity
+      rx compress <path>        Create seekable zstd for optimized access
+      rx index <path>           Create/manage large file indexes
+      rx samples <path>         Get file content around byte offsets
+      rx serve                  Start web API server
 
     \b
     Examples:
-      rx /var/log/app.log "error"
-      rx /var/log/ "error.*failed" -i
+      rx "error" /var/log/app.log
+      rx "error.*failed" /var/log/ -i
       rx analyse /var/log/app.log
       rx check "(a+)+"
       rx serve --port 8000

@@ -37,7 +37,7 @@ If you need to process many files repeatedly, use the API server (`rx serve`) in
 pip install rx-tool
 
 # Now use the rx command
-rx /var/log/app.log "error.*"
+rx "error.*" /var/log/app.log
 rx --version
 ```
 
@@ -47,14 +47,14 @@ rx --version
 
 ```bash
 uv sync
-uv run rx /var/log/app.log "error.*"
+uv run rx "error.*" /var/log/app.log
 ```
 
 ### Option 3: Standalone Binary
 
 ```bash
 ./build.sh
-./dist/rx /var/log/app.log "error.*"
+./dist/rx "error.*" /var/log/app.log
 ```
 
 ### Shell Completion
@@ -88,13 +88,13 @@ After setup, `rx <Tab>` will suggest subcommands (`analyse`, `trace`, etc.) and 
 
 ```bash
 # Search a file (returns byte offsets)
-rx /var/log/app.log "error.*"
+rx "error.*" /var/log/app.log
 
 # Search a directory
-rx /var/log/ "error.*"
+rx "error.*" /var/log/
 
 # Show context lines
-rx /var/log/app.log "error" --samples --context=3
+rx "error" /var/log/app.log --samples --context=3
 
 # Search piped input (like grep)
 cat /var/log/app.log | rx "error"
@@ -163,14 +163,14 @@ Prevents directory traversal (`../`) and symlink escape attacks.
 ## CLI Commands
 
 ### `rx` (search)
-Search files for regex patterns.
+Search files for regex patterns. Follows ripgrep argument order: `PATTERN [PATH ...]`
 
 ```bash
-rx /var/log/app.log "error.*"              # Basic search
-rx /var/log/ "error.*"                     # Search directory
-rx /var/log/app.log "error" --samples      # Show context lines
-rx /var/log/app.log "error" -i             # Case-insensitive (ripgrep flags work)
-rx /var/log/app.log "error" --json         # JSON output
+rx "error.*" /var/log/app.log              # Basic search
+rx "error.*" /var/log/                     # Search directory
+rx "error" /var/log/app.log --samples      # Show context lines
+rx "error" /var/log/app.log -i             # Case-insensitive (ripgrep flags work)
+rx "error" /var/log/app.log --json         # JSON output
 
 # Pipe input from other commands
 cat /var/log/app.log | rx "error"          # Search piped input
@@ -315,13 +315,13 @@ RX can search, analyze, and extract samples from compressed files without manual
 
 ```bash
 # Search a gzip file - works exactly like regular files
-rx /var/log/syslog.1.gz "error.*"
+rx "error.*" /var/log/syslog.1.gz
 
 # Search with context
-rx /var/log/syslog.1.gz "error" --samples --context=3
+rx "error" /var/log/syslog.1.gz --samples --context=3
 
 # All regular options work with compressed files
-rx /var/log/app.log.gz "error" -i --json
+rx "error" /var/log/app.log.gz -i --json
 ```
 
 ### Analyzing Compressed Files
