@@ -550,3 +550,378 @@ class TestSamplesEndpointNegativeOffsets:
         assert response.status_code == 400
         # Should reject negative values in ranges
         assert 'invalid' in response.json()['detail'].lower()
+
+
+class TestSamplesEndpointMultipleSpecifications:
+    """Tests for /v1/samples endpoint with multiple line specifications.
+
+    This tests the use case:
+    `/v1/samples?path=<file>&lines=1-15,55,60-62,-1&context=5`
+
+    Expected behavior:
+    - Range 1-15: returns lines 1-15 exactly (ranges ignore context)
+    - Single line 55 with context=5: returns lines 50-60
+    - Range 60-62: returns lines 60-62 exactly (ranges ignore context)
+    - Negative -1 with context=5: returns last 6 lines (last line + 5 before)
+    """
+
+    @pytest.fixture
+    def multispec_test_file(self, temp_dir):
+        """Create a test file with 100 numbered lines."""
+        lines = [f'Line {i}: content for line number {i}\n' for i in range(1, 101)]
+        temp_path = os.path.join(temp_dir, 'multispec_test.txt')
+        with open(temp_path, 'w') as f:
+            f.writelines(lines)
+        yield temp_path
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+    def test_samples_multiple_specs_combined(self, client, multispec_test_file):
+        """Test combining range, single line, and negative offset with context.
+
+        URL: /v1/samples?path=<file>&lines=1-15,55,60-62,-1&context=5
+
+        Expected samples:
+        - 1-15: 15 lines (range, context ignored)
+        - 55: 11 lines (50-60, single line with context 5)
+        - 60-62: 3 lines (range, context ignored)
+        - 100: 6 lines (95-100, resolved from -1 with context 5)
+        """
+        response = client.get(
+            '/v1/samples', params={'path': multispec_test_file, 'lines': '1-15,55,60-62,-1', 'context': 5}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check all specifications are in samples
+        assert '1-15' in data['samples'], 'Range 1-15 should be in samples'
+        assert '55' in data['samples'], 'Line 55 should be in samples'
+        assert '60-62' in data['samples'], 'Range 60-62 should be in samples'
+        assert '100' in data['samples'], 'Line 100 (resolved from -1) should be in samples'
+
+        # Verify line counts
+        assert len(data['samples']['1-15']) == 15, 'Range 1-15 should have exactly 15 lines'
+        assert len(data['samples']['55']) == 11, 'Line 55 with context 5 should have 11 lines (50-60)'
+        assert len(data['samples']['60-62']) == 3, 'Range 60-62 should have exactly 3 lines'
+        assert len(data['samples']['100']) == 6, 'Line 100 with context 5 should have 6 lines (95-100)'
+
+        # Verify content of range 1-15
+        assert 'Line 1:' in data['samples']['1-15'][0]
+        assert 'Line 15:' in data['samples']['1-15'][14]
+
+        # Verify content of line 55 with context (lines 50-60)
+        assert 'Line 50:' in data['samples']['55'][0]
+        assert 'Line 55:' in data['samples']['55'][5]
+        assert 'Line 60:' in data['samples']['55'][10]
+
+        # Verify content of range 60-62
+        assert 'Line 60:' in data['samples']['60-62'][0]
+        assert 'Line 62:' in data['samples']['60-62'][2]
+
+        # Verify content of -1 resolved to 100 with context (lines 95-100)
+        assert 'Line 95:' in data['samples']['100'][0]
+        assert 'Line 100:' in data['samples']['100'][5]
+
+    def test_samples_multiple_ranges_no_context(self, client, multispec_test_file):
+        """Test multiple ranges without context."""
+        response = client.get(
+            '/v1/samples', params={'path': multispec_test_file, 'lines': '1-5,20-25,90-95', 'context': 0}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # All three ranges should be present
+        assert '1-5' in data['samples']
+        assert '20-25' in data['samples']
+        assert '90-95' in data['samples']
+
+        # Verify exact line counts
+        assert len(data['samples']['1-5']) == 5
+        assert len(data['samples']['20-25']) == 6
+        assert len(data['samples']['90-95']) == 6
+
+    def test_samples_multiple_single_lines_with_context(self, client, multispec_test_file):
+        """Test multiple single lines with context."""
+        response = client.get('/v1/samples', params={'path': multispec_test_file, 'lines': '10,50,90', 'context': 2})
+        assert response.status_code == 200
+        data = response.json()
+
+        # All three single lines should be present
+        assert '10' in data['samples']
+        assert '50' in data['samples']
+        assert '90' in data['samples']
+
+        # Each should have 5 lines (line + 2 before + 2 after)
+        assert len(data['samples']['10']) == 5  # lines 8-12
+        assert len(data['samples']['50']) == 5  # lines 48-52
+        assert len(data['samples']['90']) == 5  # lines 88-92
+
+    def test_samples_multiple_negative_offsets(self, client, multispec_test_file):
+        """Test multiple negative line offsets with context."""
+        response = client.get('/v1/samples', params={'path': multispec_test_file, 'lines': '-1,-10,-50', 'context': 2})
+        assert response.status_code == 200
+        data = response.json()
+
+        # Negative offsets should be resolved to actual line numbers
+        # -1 = 100, -10 = 91, -50 = 51
+        assert '100' in data['samples']  # -1 resolved
+        assert '91' in data['samples']  # -10 resolved
+        assert '51' in data['samples']  # -50 resolved
+
+        # Each should have 5 lines with context 2
+        assert len(data['samples']['100']) == 3  # lines 98-100 (clamped at file end)
+        assert len(data['samples']['91']) == 5  # lines 89-93
+        assert len(data['samples']['51']) == 5  # lines 49-53
+
+    def test_samples_mixed_positive_negative_ranges(self, client, multispec_test_file):
+        """Test mixing positive lines, negative lines, and ranges."""
+        response = client.get('/v1/samples', params={'path': multispec_test_file, 'lines': '1,10-15,-5', 'context': 1})
+        assert response.status_code == 200
+        data = response.json()
+
+        # Line 1 with context 1
+        assert '1' in data['samples']
+        assert len(data['samples']['1']) == 2  # lines 1-2 (can't go before 1)
+
+        # Range 10-15 (no context for ranges)
+        assert '10-15' in data['samples']
+        assert len(data['samples']['10-15']) == 6
+
+        # -5 = line 96 with context 1
+        assert '96' in data['samples']
+        assert len(data['samples']['96']) == 3  # lines 95-97
+
+    def test_samples_url_encoded_comma_separated(self, client, multispec_test_file):
+        """Test URL-encoded comma-separated values work correctly.
+
+        This tests: /v1/samples?path=<file>&lines=1-15%2C55%2C60-62%2C-1&context=5
+        Where %2C is URL-encoded comma.
+        """
+        # FastAPI/Starlette handles URL decoding automatically
+        response = client.get(
+            '/v1/samples', params={'path': multispec_test_file, 'lines': '1-15,55,60-62,-1', 'context': 5}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should parse all four specifications
+        assert len(data['samples']) == 4
+
+    def test_samples_lines_mapping_with_multiple_specs(self, client, multispec_test_file):
+        """Test that lines mapping is correct for multiple specifications."""
+        response = client.get('/v1/samples', params={'path': multispec_test_file, 'lines': '10,20-25,-1', 'context': 0})
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check lines mapping
+        assert '10' in data['lines']
+        assert '20-25' in data['lines']
+        assert '100' in data['lines']  # -1 resolved
+
+        # Single lines should have byte offset, ranges should have -1
+        assert data['lines']['10'] >= 0  # actual byte offset
+        assert data['lines']['20-25'] == -1  # ranges don't compute offset
+        assert data['lines']['100'] >= 0  # actual byte offset
+
+    def test_samples_overlapping_specifications(self, client, multispec_test_file):
+        """Test overlapping line specifications."""
+        response = client.get('/v1/samples', params={'path': multispec_test_file, 'lines': '10-20,15-25', 'context': 0})
+        assert response.status_code == 200
+        data = response.json()
+
+        # Both ranges should be in output
+        assert '10-20' in data['samples']
+        assert '15-25' in data['samples']
+
+        # Verify counts
+        assert len(data['samples']['10-20']) == 11  # lines 10-20
+        assert len(data['samples']['15-25']) == 11  # lines 15-25
+
+    def test_samples_single_line_overlapping_with_range(self, client, multispec_test_file):
+        """Test single line with context overlapping a range."""
+        response = client.get('/v1/samples', params={'path': multispec_test_file, 'lines': '50,48-52', 'context': 3})
+        assert response.status_code == 200
+        data = response.json()
+
+        # Line 50 with context 3 (lines 47-53)
+        assert '50' in data['samples']
+        assert len(data['samples']['50']) == 7
+
+        # Range 48-52 (exactly 5 lines)
+        assert '48-52' in data['samples']
+        assert len(data['samples']['48-52']) == 5
+
+    def test_samples_before_after_context_with_specs(self, client, multispec_test_file):
+        """Test --before and --after context with multiple specifications."""
+        response = client.get(
+            '/v1/samples', params={'path': multispec_test_file, 'lines': '50,70-72', 'before': 3, 'after': 2}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Line 50 with before=3, after=2 (lines 47-52 = 6 lines)
+        # Note: implementation may use max(before, after) for symmetric context
+        assert '50' in data['samples']
+        # Verify that lines 47-52 are included at minimum
+        sample_text = '\n'.join(data['samples']['50'])
+        assert 'Line 47:' in sample_text
+        assert 'Line 50:' in sample_text
+        assert 'Line 52:' in sample_text
+
+        # Range 70-72 (exactly 3 lines, context ignored for ranges)
+        assert '70-72' in data['samples']
+        assert len(data['samples']['70-72']) == 3
+
+
+class TestSamplesEndpointCompressedRanges:
+    """Tests for /v1/samples endpoint with line ranges on compressed files."""
+
+    @pytest.fixture
+    def zstd_test_file(self, temp_dir):
+        """Create a seekable zstd file with numbered lines."""
+        import subprocess
+
+        # Create source file with 100 lines
+        txt_path = os.path.join(temp_dir, 'test.txt')
+        zst_path = os.path.join(temp_dir, 'test.txt.zst')
+
+        with open(txt_path, 'w') as f:
+            for i in range(1, 101):
+                f.write(f'Line {i}: content for line number {i}\n')
+
+        # Compress with rx compress (creates seekable zstd)
+        result = subprocess.run(
+            ['rx', 'compress', txt_path, '-o', zst_path],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0 or not os.path.exists(zst_path):
+            pytest.skip('Could not create seekable zstd file')
+
+        yield zst_path
+
+        for p in [txt_path, zst_path]:
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_zstd_samples_range_returns_single_chunk(self, client, zstd_test_file):
+        """Test that line range on zstd file returns a single chunk with range key.
+
+        This is the main regression test: previously ranges like 1-100 would
+        return empty results because the web API only handled single lines.
+        """
+        response = client.get('/v1/samples', params={'path': zstd_test_file, 'lines': '1-10'})
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Critical assertion: should have '1-10' as a key, not be empty
+        assert '1-10' in data['samples'], f"Expected '1-10' key in samples, got: {list(data['samples'].keys())}"
+
+        # Should NOT have individual line keys
+        assert '1' not in data['samples'], 'Should not have individual line keys'
+        assert '2' not in data['samples'], 'Should not have individual line keys'
+
+        # Should have 10 lines in the range
+        assert len(data['samples']['1-10']) == 10, f'Expected 10 lines, got {len(data["samples"]["1-10"])}'
+
+        # Verify content
+        assert 'Line 1:' in data['samples']['1-10'][0]
+        assert 'Line 10:' in data['samples']['1-10'][9]
+
+    def test_zstd_samples_mixed_single_and_range(self, client, zstd_test_file):
+        """Test mixing single line and range on zstd file."""
+        response = client.get('/v1/samples', params={'path': zstd_test_file, 'lines': '5,20-25', 'context': 2})
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should have both single line and range keys
+        assert '5' in data['samples'], f"Expected '5' key in samples, got: {list(data['samples'].keys())}"
+        assert '20-25' in data['samples'], f"Expected '20-25' key in samples, got: {list(data['samples'].keys())}"
+
+        # Single line should have context
+        assert len(data['samples']['5']) >= 1  # At least the line itself
+
+        # Range should have exactly 6 lines (20-25)
+        assert len(data['samples']['20-25']) == 6
+
+    def test_zstd_samples_multiple_ranges(self, client, zstd_test_file):
+        """Test multiple ranges on zstd file."""
+        response = client.get('/v1/samples', params={'path': zstd_test_file, 'lines': '1-5,50-55,90-95'})
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Should have all three range keys
+        assert '1-5' in data['samples']
+        assert '50-55' in data['samples']
+        assert '90-95' in data['samples']
+
+        # Each range should have correct number of lines
+        assert len(data['samples']['1-5']) == 5
+        assert len(data['samples']['50-55']) == 6
+        assert len(data['samples']['90-95']) == 6
+
+    def test_zstd_samples_is_compressed_flag(self, client, zstd_test_file):
+        """Test that is_compressed and compression_format are set correctly."""
+        response = client.get('/v1/samples', params={'path': zstd_test_file, 'lines': '1-5'})
+
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data['is_compressed'] is True
+        assert data['compression_format'] == 'zstd'
+
+
+class TestIndexEndpoint:
+    """Tests for the /v1/index endpoint."""
+
+    @pytest.fixture
+    def large_test_file(self, temp_dir):
+        """Create a test file large enough to be indexed (> 1MB)."""
+        # Create a file that exceeds 1MB threshold
+        # Each line is about 50 bytes, so 25000 lines = ~1.25MB
+        lines = [f'Line {i:06d}: content for line number {i} with padding\n' for i in range(1, 25001)]
+        temp_path = os.path.join(temp_dir, 'large_test.txt')
+        with open(temp_path, 'w') as f:
+            f.writelines(lines)
+        yield temp_path
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+    def test_index_endpoint_returns_task_response_with_string_path(self, client, large_test_file):
+        """Test that POST /v1/index returns TaskResponse with string path (not PosixPath).
+
+        This tests that the path field in the response is a proper string,
+        not a PosixPath object which would cause a Pydantic validation error.
+        """
+        # Force indexing regardless of size
+        response = client.post('/v1/index', json={'path': large_test_file, 'force': True, 'threshold': 1})
+
+        # Should return 200 with task info
+        assert response.status_code == 200
+        data = response.json()
+
+        # Verify response structure
+        assert 'task_id' in data
+        assert 'status' in data
+        assert 'path' in data
+        assert 'message' in data
+
+        # Critical: path should be a string, not cause serialization issues
+        assert isinstance(data['path'], str)
+        assert data['path'] == large_test_file
+
+    def test_index_endpoint_file_not_found(self, client, temp_dir):
+        """Test that POST /v1/index returns 404 for non-existent file."""
+        response = client.post('/v1/index', json={'path': os.path.join(temp_dir, 'nonexistent.txt')})
+        assert response.status_code == 404
+
+    def test_index_endpoint_file_too_small(self, client, temp_test_file):
+        """Test that POST /v1/index returns 400 for file below threshold."""
+        # Use default threshold which should be larger than our small test file
+        response = client.post('/v1/index', json={'path': temp_test_file, 'threshold': 100})
+        assert response.status_code == 400
+        assert 'below threshold' in response.json()['detail']

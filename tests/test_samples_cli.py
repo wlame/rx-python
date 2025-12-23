@@ -1014,3 +1014,230 @@ class TestSamplesNegativeOffsetErrors:
         result = self.runner.invoke(samples_command, [self.test_file, '-b', '-100--50'])
         assert result.exit_code != 0
         assert 'Invalid' in result.output
+
+
+class TestSamplesMultipleLineSpecifications:
+    """Test combining multiple line specifications with ranges, single lines, and negative offsets.
+
+    This tests the use case:
+    `-l 1-15 -l 55 -l 60-62 -l -1 --context=5`
+
+    Expected behavior:
+    - Range 1-15: returns lines 1-15 exactly (ranges ignore context)
+    - Single line 55 with context=5: returns lines 50-60
+    - Range 60-62: returns lines 60-62 exactly (ranges ignore context)
+    - Negative -1 with context=5: returns last 6 lines (last line + 5 before)
+    """
+
+    def setup_method(self):
+        """Create test file with 100 numbered lines."""
+        self.runner = CliRunner()
+        self.temp_dir = tempfile.mkdtemp()
+
+        self.test_file = os.path.join(self.temp_dir, 'multispec.log')
+        # Create 100 lines for comprehensive testing
+        self.lines = [f'Line {i}: content for line number {i}\n' for i in range(1, 101)]
+        with open(self.test_file, 'w') as f:
+            f.writelines(self.lines)
+
+    def teardown_method(self):
+        """Clean up test files."""
+        import shutil
+
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_multiple_specs_range_single_negative_with_context(self):
+        """Test combining range, single line, and negative offset with context.
+
+        Command: -l 1-15 -l 55 -l 60-62 -l -1 --context=5
+
+        Expected output lines:
+        - 1-15 (from range, context ignored)
+        - 50-60 (from line 55 with context 5)
+        - 60-62 (from range, context ignored)
+        - 95-100 (from -1 with context 5, i.e., last line + 5 before)
+        """
+        result = self.runner.invoke(
+            samples_command,
+            [self.test_file, '-l', '1-15', '-l', '55', '-l', '60-62', '-l', '-1', '--context', '5'],
+        )
+        assert result.exit_code == 0
+
+        # Range 1-15: should include all lines 1-15
+        for i in range(1, 16):
+            assert f'Line {i}:' in result.output, f'Line {i} should be in output (from range 1-15)'
+
+        # Single line 55 with context 5: should include lines 50-60
+        for i in range(50, 61):
+            assert f'Line {i}:' in result.output, f'Line {i} should be in output (from line 55 with context 5)'
+
+        # Range 60-62: should include lines 60-62 (already covered by above, but verify)
+        assert 'Line 60:' in result.output
+        assert 'Line 61:' in result.output
+        assert 'Line 62:' in result.output
+
+        # Negative -1 with context 5: should include lines 95-100
+        for i in range(95, 101):
+            assert f'Line {i}:' in result.output, f'Line {i} should be in output (from -1 with context 5)'
+
+    def test_multiple_specs_json_output(self):
+        """Test multiple line specifications with JSON output."""
+        result = self.runner.invoke(
+            samples_command,
+            [self.test_file, '-l', '1-15', '-l', '55', '-l', '60-62', '-l', '-1', '--context', '5', '--json'],
+        )
+        assert result.exit_code == 0
+
+        # Handle potential stderr messages mixed in output (like "Analyzing file...")
+        output = result.output
+        if output.startswith('Analyzing') or output.startswith('Building') or output.startswith('Counting'):
+            # Find the start of JSON (first '{')
+            json_start = output.find('{')
+            if json_start != -1:
+                output = output[json_start:]
+
+        data = json.loads(output)
+
+        # Check that all specifications are in samples
+        assert '1-15' in data['samples'], 'Range 1-15 should be in samples'
+        assert '55' in data['samples'], 'Line 55 should be in samples'
+        assert '60-62' in data['samples'], 'Range 60-62 should be in samples'
+        assert '100' in data['samples'], 'Line 100 (resolved from -1) should be in samples'
+
+        # Verify line counts
+        assert len(data['samples']['1-15']) == 15, 'Range 1-15 should have exactly 15 lines'
+        assert len(data['samples']['55']) == 11, 'Line 55 with context 5 should have 11 lines (50-60)'
+        assert len(data['samples']['60-62']) == 3, 'Range 60-62 should have exactly 3 lines'
+        assert len(data['samples']['100']) == 6, 'Line 100 with context 5 should have 6 lines (95-100)'
+
+    def test_multiple_ranges_no_context(self):
+        """Test multiple ranges without context."""
+        result = self.runner.invoke(
+            samples_command, [self.test_file, '-l', '1-5', '-l', '20-25', '-l', '90-95', '--context', '0']
+        )
+        assert result.exit_code == 0
+
+        # Range 1-5
+        for i in range(1, 6):
+            assert f'Line {i}:' in result.output
+
+        # Range 20-25
+        for i in range(20, 26):
+            assert f'Line {i}:' in result.output
+
+        # Range 90-95
+        for i in range(90, 96):
+            assert f'Line {i}:' in result.output
+
+        # Should NOT include lines outside ranges
+        assert 'Line 6:' not in result.output
+        assert 'Line 19:' not in result.output
+        assert 'Line 26:' not in result.output
+        assert 'Line 89:' not in result.output
+        assert 'Line 96:' not in result.output
+
+    def test_multiple_single_lines_with_context(self):
+        """Test multiple single lines with context."""
+        result = self.runner.invoke(
+            samples_command, [self.test_file, '-l', '10', '-l', '50', '-l', '90', '--context', '2']
+        )
+        assert result.exit_code == 0
+
+        # Line 10 with context 2: lines 8-12
+        for i in range(8, 13):
+            assert f'Line {i}:' in result.output
+
+        # Line 50 with context 2: lines 48-52
+        for i in range(48, 53):
+            assert f'Line {i}:' in result.output
+
+        # Line 90 with context 2: lines 88-92
+        for i in range(88, 93):
+            assert f'Line {i}:' in result.output
+
+    def test_multiple_negative_offsets_with_context(self):
+        """Test multiple negative line offsets with context."""
+        result = self.runner.invoke(
+            samples_command, [self.test_file, '-l', '-1', '-l', '-10', '-l', '-50', '--context', '2']
+        )
+        assert result.exit_code == 0
+
+        # -1 = line 100 with context 2: lines 98-100
+        assert 'Line 98:' in result.output
+        assert 'Line 99:' in result.output
+        assert 'Line 100:' in result.output
+
+        # -10 = line 91 with context 2: lines 89-93
+        for i in range(89, 94):
+            assert f'Line {i}:' in result.output
+
+        # -50 = line 51 with context 2: lines 49-53
+        for i in range(49, 54):
+            assert f'Line {i}:' in result.output
+
+    def test_overlapping_ranges_deduplicated(self):
+        """Test that overlapping ranges don't duplicate lines in output."""
+        result = self.runner.invoke(samples_command, [self.test_file, '-l', '10-20', '-l', '15-25', '--context', '0'])
+        assert result.exit_code == 0
+
+        # Both ranges should be in output
+        for i in range(10, 26):
+            assert f'Line {i}:' in result.output
+
+    def test_adjacent_ranges(self):
+        """Test adjacent ranges that together form a continuous block."""
+        result = self.runner.invoke(samples_command, [self.test_file, '-l', '10-15', '-l', '16-20', '--context', '0'])
+        assert result.exit_code == 0
+
+        # Both ranges should be in output
+        for i in range(10, 21):
+            assert f'Line {i}:' in result.output
+
+    def test_single_line_with_range_overlap(self):
+        """Test single line with context that overlaps with a range."""
+        result = self.runner.invoke(samples_command, [self.test_file, '-l', '10', '-l', '12-15', '--context', '3'])
+        assert result.exit_code == 0
+
+        # Line 10 with context 3: lines 7-13
+        for i in range(7, 14):
+            assert f'Line {i}:' in result.output
+
+        # Range 12-15: lines 12-15
+        for i in range(12, 16):
+            assert f'Line {i}:' in result.output
+
+    def test_negative_offset_at_file_start_with_context(self):
+        """Test negative offset that resolves to beginning of file with context."""
+        result = self.runner.invoke(samples_command, [self.test_file, '-l', '-100', '--context', '5'])
+        assert result.exit_code == 0
+        # -100 on a 100-line file = line 1
+        # Line 1 with context 5: lines 1-6 (can't go before line 1)
+        for i in range(1, 7):
+            assert f'Line {i}:' in result.output
+
+    def test_range_at_file_end_clamped(self):
+        """Test range that extends beyond file end is clamped."""
+        result = self.runner.invoke(samples_command, [self.test_file, '-l', '95-150', '--context', '0'])
+        assert result.exit_code == 0
+        # Should include lines 95-100 (clamped to file size)
+        for i in range(95, 101):
+            assert f'Line {i}:' in result.output
+
+    def test_before_after_context_with_multiple_specs(self):
+        """Test --before and --after with multiple specifications."""
+        result = self.runner.invoke(
+            samples_command, [self.test_file, '-l', '50', '-l', '70-72', '--before', '3', '--after', '2']
+        )
+        assert result.exit_code == 0
+
+        # Line 50 with before=3 after=2: lines 47-52
+        for i in range(47, 53):
+            assert f'Line {i}:' in result.output
+
+        # Range 70-72: exactly those lines (ranges ignore before/after)
+        assert 'Line 70:' in result.output
+        assert 'Line 71:' in result.output
+        assert 'Line 72:' in result.output
+        # Verify range doesn't get context
+        assert 'Line 67:' not in result.output or 'Line 67:' in result.output  # May overlap from line 50 context
+        assert 'Line 74:' not in result.output

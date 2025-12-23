@@ -245,8 +245,9 @@ class FileAnalyzer:
 
                     if result.index_valid:
                         try:
-                            index_data = seekable_index.load_seekable_index(filepath)
-                            result.index_checkpoint_count = len(index_data.get('frames', []))
+                            index_data = seekable_index.load_index(index_path)
+                            if index_data:
+                                result.index_checkpoint_count = len(index_data.frames)
                         except Exception as e:
                             logger.warning(f'Failed to load seekable index: {e}')
             else:

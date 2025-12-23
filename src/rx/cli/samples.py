@@ -107,30 +107,60 @@ def get_lines_for_byte_range(path: str, start_offset: int, end_offset: int, inde
     return result
 
 
-def get_line_range(path: str, start_line: int, end_line: int) -> list[str]:
+def get_line_range(path: str, start_line: int, end_line: int, file_index: 'FileIndex | None' = None) -> list[str]:
     """Get lines from start_line to end_line (inclusive, 1-based).
 
-    Efficiently reads only the required lines without loading the entire file.
+    Uses the index to seek directly to the start line's byte offset for efficiency.
+    Falls back to linear scan if no index is available.
 
     Args:
         path: File path
         start_line: Starting line number (1-based)
         end_line: Ending line number (1-based, inclusive)
+        file_index: Optional pre-loaded FileIndex for efficient seeking
 
     Returns:
         List of lines in the range
     """
+
     # Validate line numbers
     if start_line < 1 or end_line < 1:
         return []
 
-    result = []
-    with open(path, encoding='utf-8', errors='replace') as f:
-        for current_line, line in enumerate(f, 1):
-            if current_line > end_line:
+    # Try to use index for efficient seeking
+    start_offset = None
+    if file_index and file_index.line_index:
+        # Find the closest checkpoint at or before start_line
+        # line_index format: [[line_number, byte_offset], ...]
+        for entry in reversed(file_index.line_index):
+            checkpoint_line = entry[0]
+            checkpoint_offset = entry[1]
+            if checkpoint_line <= start_line:
+                start_offset = checkpoint_offset
+                checkpoint_start_line = checkpoint_line
                 break
-            if current_line >= start_line:
-                result.append(line.rstrip('\n\r'))
+
+    result = []
+
+    if start_offset is not None:
+        # Efficient path: seek to checkpoint and scan from there
+        with open(path, 'rb') as f:
+            f.seek(start_offset)
+            current_line = checkpoint_start_line
+            for raw_line in f:
+                if current_line > end_line:
+                    break
+                if current_line >= start_line:
+                    result.append(raw_line.decode('utf-8', errors='replace').rstrip('\n\r'))
+                current_line += 1
+    else:
+        # Fallback: linear scan from beginning (for small files without index)
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for current_line, line in enumerate(f, 1):
+                if current_line > end_line:
+                    break
+                if current_line >= start_line:
+                    result.append(line.rstrip('\n\r'))
 
     return result
 
@@ -360,8 +390,6 @@ def samples_command(
     try:
         # Handle compressed files separately
         if file_is_compressed:
-            line_list = list(line_offset)
-
             # Check if this is a seekable zstd file
             from rx.seekable_zstd import is_seekable_zstd
 
@@ -374,70 +402,121 @@ def samples_command(
                 index = get_or_build_index(path)
                 frames = read_seek_table(path)
 
-                # Get samples for each line using seekable zstd
+                # Get samples for each line/range using seekable zstd
                 context_data = {}
                 line_to_offset = {}
-                for line_num in line_list:
-                    # Find which frame contains this line
-                    frame_idx = None
-                    frame_info = None
-                    for frame in index.frames:
-                        if frame.first_line <= line_num <= frame.last_line:
-                            frame_idx = frame.index
-                            frame_info = frame
-                            first_line = frame.first_line
-                            break
 
-                    if frame_idx is None:
-                        context_data[line_num] = []
-                        line_to_offset[str(line_num)] = -1
-                        continue
+                for start, end in parsed_offsets:
+                    if end is None:
+                        # Single line - use context
+                        line_num = start
 
-                    # Calculate byte offset for this line
-                    # Start with the frame's starting offset, then add bytes for each line before the target
-                    frame_offset = frames[frame_idx].decompressed_offset
+                        # Find which frame contains this line
+                        frame_idx = None
+                        for frame in index.frames:
+                            if frame.first_line <= line_num <= frame.last_line:
+                                frame_idx = frame.index
+                                first_line = frame.first_line
+                                break
 
-                    # Decompress the frame to calculate exact offset
-                    frame_data = decompress_frame(path, frame_idx, frames)
-                    frame_lines = frame_data.decode('utf-8', errors='replace').split('\n')
+                        if frame_idx is None:
+                            context_data[line_num] = []
+                            line_to_offset[str(line_num)] = -1
+                            continue
 
-                    # Calculate line index within frame (0-based)
-                    line_in_frame = line_num - first_line
+                        # Calculate byte offset for this line
+                        frame_offset = frames[frame_idx].decompressed_offset
 
-                    # Calculate byte offset by summing lengths of lines before target
-                    byte_offset = frame_offset
-                    for i in range(line_in_frame):
-                        byte_offset += len(frame_lines[i].encode('utf-8')) + 1  # +1 for newline
+                        # Decompress the frame to calculate exact offset
+                        frame_data = decompress_frame(path, frame_idx, frames)
+                        frame_lines = frame_data.decode('utf-8', errors='replace').split('\n')
 
-                    line_to_offset[str(line_num)] = byte_offset
+                        # Calculate line index within frame (0-based)
+                        line_in_frame = line_num - first_line
 
-                    # Get context lines
-                    start_idx = max(0, line_in_frame - before_context)
-                    end_idx = min(len(frame_lines), line_in_frame + after_context + 1)
+                        # Calculate byte offset by summing lengths of lines before target
+                        byte_offset = frame_offset
+                        for i in range(line_in_frame):
+                            byte_offset += len(frame_lines[i].encode('utf-8')) + 1  # +1 for newline
 
-                    context_data[line_num] = frame_lines[start_idx:end_idx]
+                        line_to_offset[str(line_num)] = byte_offset
+
+                        # Get context lines
+                        start_idx = max(0, line_in_frame - before_context)
+                        end_idx = min(len(frame_lines), line_in_frame + after_context + 1)
+
+                        context_data[line_num] = frame_lines[start_idx:end_idx]
+                    else:
+                        # Range - get exact lines, ignore context
+                        range_key = f'{start}-{end}'
+                        range_lines = []
+
+                        # Collect all lines in the range, potentially across multiple frames
+                        for line_num in range(start, end + 1):
+                            # Find which frame contains this line
+                            frame_idx = None
+                            for frame in index.frames:
+                                if frame.first_line <= line_num <= frame.last_line:
+                                    frame_idx = frame.index
+                                    first_line = frame.first_line
+                                    break
+
+                            if frame_idx is None:
+                                continue
+
+                            # Decompress the frame
+                            frame_data = decompress_frame(path, frame_idx, frames)
+                            frame_lines = frame_data.decode('utf-8', errors='replace').split('\n')
+
+                            # Calculate line index within frame (0-based)
+                            line_in_frame = line_num - first_line
+                            if 0 <= line_in_frame < len(frame_lines):
+                                range_lines.append(frame_lines[line_in_frame])
+
+                        context_data[range_key] = range_lines
+                        line_to_offset[range_key] = -1
             else:
                 # Use generic compressed index for other formats
                 click.echo(f'Processing compressed file ({compression_format.value})...', err=True)
                 index_data = get_or_build_compressed_index(path)
 
-                # Get samples for each line
+                # Get samples for each line/range
                 context_data = {}
-                for line_num in line_list:
-                    lines = get_decompressed_content_at_line(
-                        path,
-                        line_num,
-                        context_before=before_context,
-                        context_after=after_context,
-                        index_data=index_data,
-                    )
-                    context_data[line_num] = lines
+                line_to_offset = {}
+                for start, end in parsed_offsets:
+                    if end is None:
+                        # Single line - use context
+                        lines = get_decompressed_content_at_line(
+                            path,
+                            start,
+                            context_before=before_context,
+                            context_after=after_context,
+                            index_data=index_data,
+                        )
+                        context_data[start] = lines
+                        line_to_offset[str(start)] = -1
+                    else:
+                        # Range - get exact lines, ignore context
+                        range_key = f'{start}-{end}'
+                        range_lines = []
+                        for line_num in range(start, end + 1):
+                            lines = get_decompressed_content_at_line(
+                                path,
+                                line_num,
+                                context_before=0,
+                                context_after=0,
+                                index_data=index_data,
+                            )
+                            if lines:
+                                range_lines.extend(lines)
+                        context_data[range_key] = range_lines
+                        line_to_offset[range_key] = -1
 
             # Use calculated offsets for seekable zstd, -1 for other formats
             if is_seekable_zstd(path):
                 lines_dict = line_to_offset
             else:
-                lines_dict = {str(ln): -1 for ln in line_list}
+                lines_dict = line_to_offset
 
             response = SamplesResponse(
                 path=path,
@@ -528,7 +607,7 @@ def samples_command(
                 else:
                     # Range - get exact lines, ignore context
                     range_key = f'{start}-{end}'
-                    lines = get_line_range(path, start, end)
+                    lines = get_line_range(path, start, end, index_data)
                     context_data[range_key] = lines
                     # For ranges, byte offset is not meaningful - use -1 to skip expensive calculation
                     line_to_offset[range_key] = -1
