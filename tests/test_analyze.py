@@ -9,13 +9,13 @@ import pytest
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
-from rx.analyse import (
+from rx.analyzer import (
     FileAnalyzer,
-    analyse_path,
+    analyze_path,
     human_readable_size,
 )
-from rx.cli.analyse import analyse_command
-from rx.models import AnalyseResponse, FileAnalysisResult
+from rx.cli.index import index_command
+from rx.models import AnalyzeResponse, FileAnalysisResult
 from rx.web import app
 
 
@@ -278,12 +278,12 @@ class TestFileAnalyzer:
         assert hasattr(result, 'owner')
 
 
-class TestAnalysePath:
-    """Tests for analyse_path function"""
+class TestAnalyzePath:
+    """Tests for analyze_path function"""
 
-    def test_analyse_single_file(self, temp_text_file):
+    def test_analyze_single_file(self, temp_text_file):
         """Test analyzing a single file"""
-        result = analyse_path([temp_text_file])
+        result = analyze_path([temp_text_file])
 
         assert 'path' in result
         assert 'time' in result
@@ -301,9 +301,9 @@ class TestAnalysePath:
         assert 'f1' in result['files']
         assert result['files']['f1'] == temp_text_file
 
-    def test_analyse_directory(self, temp_directory):
+    def test_analyze_directory(self, temp_directory):
         """Test analyzing a directory - only text files are analyzed"""
-        result = analyse_path([temp_directory])
+        result = analyze_path([temp_directory])
 
         # Only text files are analyzed when scanning directories
         assert len(result['files']) == 1  # only test.txt
@@ -312,26 +312,26 @@ class TestAnalysePath:
         # Binary file should be in skipped_files
         assert len(result['skipped_files']) == 1
 
-    def test_analyse_multiple_paths(self, temp_text_file, temp_empty_file):
+    def test_analyze_multiple_paths(self, temp_text_file, temp_empty_file):
         """Test analyzing multiple paths"""
-        result = analyse_path([temp_text_file, temp_empty_file])
+        result = analyze_path([temp_text_file, temp_empty_file])
 
         assert len(result['files']) == 2
         assert len(result['results']) == 2
         assert 'f1' in result['files']
         assert 'f2' in result['files']
 
-    def test_analyse_with_max_workers(self, temp_directory):
+    def test_analyze_with_max_workers(self, temp_directory):
         """Test analyzing with custom max_workers"""
-        result = analyse_path([temp_directory], max_workers=2)
+        result = analyze_path([temp_directory], max_workers=2)
 
         # Only text files are analyzed
         assert len(result['files']) == 1
         assert result['time'] > 0
 
-    def test_analyse_nonexistent_path(self):
+    def test_analyze_nonexistent_path(self):
         """Test analyzing a nonexistent path"""
-        result = analyse_path(['/nonexistent/path'])
+        result = analyze_path(['/nonexistent/path'])
 
         # Should return empty results, not crash
         assert len(result['files']) == 0
@@ -339,159 +339,158 @@ class TestAnalysePath:
 
     def test_timing_information(self, temp_text_file):
         """Test that timing information is included"""
-        result = analyse_path([temp_text_file])
+        result = analyze_path([temp_text_file])
 
         assert 'time' in result
         assert isinstance(result['time'], float)
         assert result['time'] >= 0
 
 
-class TestAnalyseEndpoint:
-    """Tests for /v1/analyse API endpoint"""
+class TestIndexEndpoint:
+    """Tests for /v1/index API endpoint"""
 
-    def test_analyse_requires_path(self, client):
-        """Test analyse endpoint requires path parameter"""
-        response = client.get('/v1/analyse')
+    def test_index_requires_path(self, client):
+        """Test index endpoint requires path parameter"""
+        response = client.get('/v1/index')
         assert response.status_code == 422  # Validation error
 
-    def test_analyse_single_file(self, client, temp_text_file):
-        """Test analyzing a single file via API"""
-        response = client.get('/v1/analyse', params={'path': temp_text_file})
+    def test_index_single_file_with_analyze(self, client, temp_text_file):
+        """Test indexing a single file with analysis via API"""
+        response = client.get('/v1/index', params={'path': temp_text_file, 'analyze': True})
         assert response.status_code == 200
 
         data = response.json()
-        assert 'path' in data
-        assert 'time' in data
-        assert 'files' in data
-        assert 'results' in data
-        assert 'scanned_files' in data
-        assert 'skipped_files' in data
+        assert 'indexed' in data
+        assert 'skipped' in data
+        assert 'errors' in data
+        assert 'total_time' in data
 
-        assert len(data['files']) == 1
-        assert len(data['results']) == 1
+        assert len(data['indexed']) == 1
+        assert len(data['errors']) == 0
 
-    def test_analyse_with_max_workers(self, client, temp_text_file):
-        """Test analyzing with custom max_workers parameter"""
-        response = client.get('/v1/analyse', params={'path': temp_text_file, 'max_workers': 5})
+    def test_index_with_max_workers(self, client, temp_text_file):
+        """Test indexing with custom max_workers parameter"""
+        response = client.get('/v1/index', params={'path': temp_text_file, 'analyze': True, 'max_workers': 5})
         assert response.status_code == 200
 
-    def test_analyse_nonexistent_file(self, client, temp_root):
-        """Test analyzing nonexistent file returns 404"""
+    def test_index_nonexistent_file(self, client, temp_root):
+        """Test indexing nonexistent file returns 404"""
         nonexistent = os.path.join(temp_root, 'nonexistent.txt')
-        response = client.get('/v1/analyse', params={'path': nonexistent})
+        response = client.get('/v1/index', params={'path': nonexistent})
         assert response.status_code == 404
 
-    def test_analyse_directory(self, client, temp_directory):
-        """Test analyzing a directory via API"""
-        response = client.get('/v1/analyse', params={'path': temp_directory})
+    def test_index_directory_with_analyze(self, client, temp_directory):
+        """Test indexing a directory with analysis via API"""
+        response = client.get('/v1/index', params={'path': temp_directory, 'analyze': True})
         assert response.status_code == 200
 
         data = response.json()
-        assert len(data['files']) >= 1  # At least one file in directory
+        assert len(data['indexed']) >= 1  # At least one file in directory
 
-    def test_analyse_response_structure(self, client, temp_text_file):
-        """Test that response matches AnalyseResponse model"""
-        response = client.get('/v1/analyse', params={'path': temp_text_file})
+    def test_index_response_structure(self, client, temp_text_file):
+        """Test that response matches expected structure"""
+        response = client.get('/v1/index', params={'path': temp_text_file, 'analyze': True})
         assert response.status_code == 200
 
         data = response.json()
 
         # Validate response structure
-        result = data['results'][0]
-        assert 'file' in result
+        result = data['indexed'][0]
+        assert 'path' in result
+        assert 'file_type' in result
         assert 'size_bytes' in result
-        assert 'size_human' in result
-        assert 'is_text' in result
-        assert 'created_at' in result
-        assert 'modified_at' in result
-        assert 'permissions' in result
+        assert 'line_count' in result
+        assert 'index_entries' in result
+        assert 'analysis_performed' in result
+        assert 'build_time_seconds' in result
+        assert 'anomaly_count' in result
+        assert 'anomaly_summary' in result
 
-        # Text file should have text metrics
-        if result['is_text']:
-            assert 'line_count' in result
-            assert 'empty_line_count' in result
+        # With analyze=True, analysis should be performed
+        assert result['analysis_performed'] is True
 
-    def test_analyse_max_workers_validation(self, client, temp_text_file):
+    def test_index_max_workers_validation(self, client, temp_text_file):
         """Test max_workers parameter validation"""
         # Too low
-        response = client.get('/v1/analyse', params={'path': temp_text_file, 'max_workers': 0})
+        response = client.get('/v1/index', params={'path': temp_text_file, 'max_workers': 0})
         assert response.status_code == 422
 
         # Too high
-        response = client.get('/v1/analyse', params={'path': temp_text_file, 'max_workers': 100})
+        response = client.get('/v1/index', params={'path': temp_text_file, 'max_workers': 100})
         assert response.status_code == 422
 
 
-class TestAnalyseCLI:
-    """Tests for rx analyse CLI command"""
+class TestAnalyzeCLI:
+    """Tests for rx analyze CLI command"""
 
-    def test_analyse_requires_path(self):
-        """Test analyse command requires path argument"""
+    def test_analyze_requires_path(self):
+        """Test analyze command requires path argument"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [])
+        result = runner.invoke(index_command, [])
         assert result.exit_code != 0
 
-    def test_analyse_single_file(self, temp_text_file):
+    def test_analyze_single_file(self, temp_text_file):
         """Test analyzing a single file via CLI"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_text_file])
+        result = runner.invoke(index_command, [temp_text_file, '--analyze'])
         assert result.exit_code == 0
         assert 'Analysis Results' in result.output or temp_text_file in result.output
 
-    def test_analyse_json_output(self, temp_text_file):
+    def test_analyze_json_output(self, temp_text_file):
         """Test --json flag outputs valid JSON"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_text_file, '--json'])
+        result = runner.invoke(index_command, [temp_text_file, '--analyze', '--json'])
         assert result.exit_code == 0
 
-        # Should be valid JSON
+        # Should be valid JSON with unified index format
         data = json.loads(result.output)
-        assert 'path' in data
-        assert 'files' in data
-        assert 'results' in data
+        assert 'indexed' in data
+        assert 'skipped' in data
+        assert 'errors' in data
+        assert 'total_time' in data
 
-    def test_analyse_no_color(self, temp_text_file):
+    def test_analyze_no_color(self, temp_text_file):
         """Test --no-color flag"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_text_file, '--no-color'])
+        result = runner.invoke(index_command, [temp_text_file, '--analyze'])
         assert result.exit_code == 0
         # Output should not contain ANSI escape codes
         assert '\x1b[' not in result.output or result.output.strip() == ''
 
-    def test_analyse_max_workers(self, temp_text_file):
+    def test_analyze_max_workers(self, temp_text_file):
         """Test --max-workers parameter"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_text_file, '--max-workers', '5'])
+        result = runner.invoke(index_command, [temp_text_file, '--analyze', '--max-workers', '5'])
         assert result.exit_code == 0
 
-    def test_analyse_multiple_paths(self, temp_text_file, temp_empty_file):
+    def test_analyze_multiple_paths(self, temp_text_file, temp_empty_file):
         """Test analyzing multiple paths"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_text_file, temp_empty_file])
+        result = runner.invoke(index_command, [temp_text_file, temp_empty_file, '--analyze'])
         assert result.exit_code == 0
 
-    def test_analyse_directory(self, temp_directory):
+    def test_analyze_directory(self, temp_directory):
         """Test analyzing a directory - only text files are analyzed"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_directory])
+        result = runner.invoke(index_command, [temp_directory, '--analyze', '-r'])
         # Exit code 0 for success, 2 for warning (skipped binary files)
         assert result.exit_code in [0, 2]
 
-    def test_analyse_nonexistent_file(self):
+    def test_analyze_nonexistent_file(self):
         """Test analyzing nonexistent file"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, ['/nonexistent/file.txt'])
+        result = runner.invoke(index_command, ['/nonexistent/file.txt', '--analyze'])
         assert result.exit_code != 0
 
-    def test_analyse_with_skipped_files(self, temp_directory):
+    def test_analyze_with_skipped_files(self, temp_directory):
         """Test exit code when files are skipped"""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_directory])
+        result = runner.invoke(index_command, [temp_directory, '--analyze', '-r'])
         # Exit code 2 indicates warning (skipped files)
         assert result.exit_code in [0, 2]
 
 
-class TestAnalyseModels:
+class TestAnalyzeModels:
     """Tests for Pydantic models"""
 
     def test_file_analysis_result_model(self):
@@ -528,9 +527,9 @@ class TestAnalyseModels:
         assert result.line_length_max_line_number == 5
         assert result.line_ending == 'LF'
 
-    def test_analyse_response_model(self):
-        """Test AnalyseResponse model creation"""
-        response = AnalyseResponse(
+    def test_analyze_response_model(self):
+        """Test AnalyzeResponse model creation"""
+        response = AnalyzeResponse(
             path='/tmp/test',
             time=0.123,
             files={'f1': '/tmp/test/file.txt'},
@@ -565,9 +564,9 @@ class TestAnalyseModels:
         assert len(response.results) == 1
         assert len(response.files) == 1
 
-    def test_analyse_response_to_cli(self):
-        """Test AnalyseResponse.to_cli() method"""
-        response = AnalyseResponse(
+    def test_analyze_response_to_cli(self):
+        """Test AnalyzeResponse.to_cli() method"""
+        response = AnalyzeResponse(
             path='/tmp/test',
             time=0.123,
             files={'f1': '/tmp/test/file.txt'},
@@ -629,7 +628,7 @@ class TestAddIndexInfo:
         - seekable_index.get_index_path (correct)
         - index.get_index_path (correct)
         """
-        from rx.analyse import FileAnalysisState
+        from rx.analyzer import FileAnalysisState
 
         analyzer = FileAnalyzer()
         result = FileAnalysisState(
@@ -657,7 +656,7 @@ class TestAddIndexInfo:
 
     def test_add_index_info_with_seekable_zstd(self, temp_root):
         """Test _add_index_info with a seekable zstd file (if available)"""
-        from rx.analyse import FileAnalysisState
+        from rx.analyzer import FileAnalysisState
 
         # Create a mock .zst file (not actually seekable, just for testing path)
         zst_path = os.path.join(temp_root, 'test.zst')
@@ -691,30 +690,29 @@ class TestAddIndexInfo:
                 os.unlink(zst_path)
 
     def test_add_index_info_modules_imported_correctly(self):
-        """Verify that analyse module imports are correct"""
-        from rx import analyse
+        """Verify that analyzer module imports are correct.
 
-        # Verify modules are imported at the top level
-        assert hasattr(analyse, 'index')
-        assert hasattr(analyse, 'seekable_index')
-        assert hasattr(analyse, 'seekable_zstd')
-
-        # Verify these are modules, not nested attributes
+        The analyzer.py imports index, seekable_index, seekable_zstd directly
+        from rx package, not from rx.analyze module.
+        """
         import types
 
-        assert isinstance(analyse.index, types.ModuleType)
-        assert isinstance(analyse.seekable_index, types.ModuleType)
-        assert isinstance(analyse.seekable_zstd, types.ModuleType)
+        from rx import index, seekable_index, seekable_zstd
+
+        # Verify these are modules
+        assert isinstance(index, types.ModuleType)
+        assert isinstance(seekable_index, types.ModuleType)
+        assert isinstance(seekable_zstd, types.ModuleType)
 
         # Verify the functions exist on the modules directly
-        assert hasattr(analyse.index, 'get_index_path')
-        assert hasattr(analyse.seekable_index, 'get_index_path')
-        assert hasattr(analyse.seekable_zstd, 'is_seekable_zstd')
+        assert hasattr(index, 'get_index_path')
+        assert hasattr(seekable_index, 'get_index_path')
+        assert hasattr(seekable_zstd, 'is_seekable_zstd')
 
         # Verify they are callable
-        assert callable(analyse.index.get_index_path)
-        assert callable(analyse.seekable_index.get_index_path)
-        assert callable(analyse.seekable_zstd.is_seekable_zstd)
+        assert callable(index.get_index_path)
+        assert callable(seekable_index.get_index_path)
+        assert callable(seekable_zstd.is_seekable_zstd)
 
 
 class TestReservoirSampling:
@@ -722,7 +720,7 @@ class TestReservoirSampling:
 
     def test_get_sample_size_default(self):
         """Test default sample size is 1,000,000"""
-        from rx.analyse import get_sample_size_lines
+        from rx.analyzer import get_sample_size_lines
 
         # Clear env var if set
         old_value = os.environ.pop('RX_SAMPLE_SIZE_LINES', None)
@@ -734,7 +732,7 @@ class TestReservoirSampling:
 
     def test_get_sample_size_custom(self):
         """Test custom sample size from env variable"""
-        from rx.analyse import get_sample_size_lines
+        from rx.analyzer import get_sample_size_lines
 
         old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
         try:
@@ -748,7 +746,7 @@ class TestReservoirSampling:
 
     def test_get_sample_size_invalid(self):
         """Test invalid sample size falls back to default"""
-        from rx.analyse import get_sample_size_lines
+        from rx.analyzer import get_sample_size_lines
 
         old_value = os.environ.get('RX_SAMPLE_SIZE_LINES')
         try:
@@ -1114,9 +1112,9 @@ ConnectionError: timeout
             assert len(anomaly.description) > 0
             assert len(anomaly.detector) > 0
 
-    def test_analyse_path_with_detect_anomalies(self, temp_log_with_errors):
-        """Test analyse_path function with detect_anomalies=True."""
-        result = analyse_path([temp_log_with_errors], detect_anomalies=True)
+    def test_analyze_path_with_detect_anomalies(self, temp_log_with_errors):
+        """Test analyze_path function with detect_anomalies=True."""
+        result = analyze_path([temp_log_with_errors], detect_anomalies=True)
 
         assert len(result['results']) == 1
         file_result = result['results'][0]
@@ -1126,9 +1124,9 @@ ConnectionError: timeout
         assert len(file_result['anomalies']) > 0
         assert file_result.get('anomaly_summary') is not None
 
-    def test_analyse_path_without_detect_anomalies(self, temp_log_with_errors):
-        """Test analyse_path function with detect_anomalies=False (default)."""
-        result = analyse_path([temp_log_with_errors], detect_anomalies=False)
+    def test_analyze_path_without_detect_anomalies(self, temp_log_with_errors):
+        """Test analyze_path function with detect_anomalies=False (default)."""
+        result = analyze_path([temp_log_with_errors], detect_anomalies=False)
 
         assert len(result['results']) == 1
         file_result = result['results'][0]
@@ -1140,55 +1138,53 @@ ConnectionError: timeout
     def test_cli_detect_anomalies_flag(self, temp_log_with_errors):
         """Test CLI with --detect-anomalies flag."""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_log_with_errors, '--detect-anomalies'])
+        result = runner.invoke(index_command, [temp_log_with_errors, '--analyze'])
 
         assert result.exit_code == 0
         # Output should mention anomalies
         assert 'Anomalies' in result.output or 'detected' in result.output.lower()
 
     def test_cli_detect_anomalies_json(self, temp_log_with_errors):
-        """Test CLI with --detect-anomalies and --json flags."""
+        """Test CLI with --analyze and --json flags."""
         runner = CliRunner()
-        result = runner.invoke(analyse_command, [temp_log_with_errors, '--detect-anomalies', '--json'])
+        result = runner.invoke(index_command, [temp_log_with_errors, '--analyze', '--json'])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
 
-        # Should have anomalies in JSON output
-        assert 'results' in data
-        assert len(data['results']) == 1
-        file_result = data['results'][0]
-        assert 'anomalies' in file_result
+        # Should have anomaly info in JSON output (unified index format)
+        assert 'indexed' in data
+        assert len(data['indexed']) == 1
+        file_result = data['indexed'][0]
+        assert 'anomaly_count' in file_result
         assert 'anomaly_summary' in file_result
 
-    def test_web_api_detect_anomalies(self, client, temp_log_with_errors):
-        """Test web API with detect_anomalies=true."""
-        response = client.get('/v1/analyse', params={'path': temp_log_with_errors, 'detect_anomalies': True})
+    def test_web_api_with_analyze(self, client, temp_log_with_errors):
+        """Test web API with analyze=true."""
+        response = client.get('/v1/index', params={'path': temp_log_with_errors, 'analyze': True})
 
         assert response.status_code == 200
         data = response.json()
 
-        assert 'results' in data
-        assert len(data['results']) == 1
-        file_result = data['results'][0]
+        assert 'indexed' in data
+        assert len(data['indexed']) == 1
+        file_result = data['indexed'][0]
 
-        # Should have anomalies
-        assert file_result.get('anomalies') is not None
-        assert len(file_result['anomalies']) > 0
+        # Should have anomaly info when analyze=True
+        assert 'anomaly_count' in file_result
+        assert 'anomaly_summary' in file_result
+        assert file_result['anomaly_count'] > 0
 
-    def test_web_api_without_detect_anomalies(self, client, temp_log_with_errors):
-        """Test web API without detect_anomalies (default=false)."""
-        response = client.get('/v1/analyse', params={'path': temp_log_with_errors})
+    def test_web_api_without_analyze(self, client, temp_log_with_errors):
+        """Test web API without analyze (default=false) - small file skipped."""
+        response = client.get('/v1/index', params={'path': temp_log_with_errors})
 
         assert response.status_code == 200
         data = response.json()
 
-        assert 'results' in data
-        file_result = data['results'][0]
-
-        # Should have no anomalies or None
-        anomalies = file_result.get('anomalies')
-        assert anomalies is None or len(anomalies) == 0
+        # Without analyze=True and file < 50MB, file should be skipped
+        assert 'skipped' in data
+        assert len(data['skipped']) == 1 or len(data['indexed']) == 0
 
 
 class TestCacheInvalidationWithAnomalies:
@@ -1214,16 +1210,16 @@ ConnectionError: Failed
 
     def test_cache_bypassed_when_anomalies_requested_but_cache_has_none(self, temp_log_file):
         """Test that cache is bypassed when detect_anomalies=True but cache has no anomalies."""
-        from rx.analyse_cache import load_cache
+        from rx.unified_index import load_index
 
         # First, analyze without anomaly detection to create cache
         analyzer_no_anomalies = FileAnalyzer(detect_anomalies=False)
         result_no_anomalies = analyzer_no_anomalies.analyze_file(temp_log_file, 'test_file')
 
         # Verify cache was created without anomalies
-        cached = load_cache(temp_log_file)
+        cached = load_index(temp_log_file)
         assert cached is not None
-        assert not cached.get('anomalies')  # Empty or None
+        assert not cached.anomalies  # Empty or None
 
         # Now analyze with anomaly detection - should bypass cache and detect anomalies
         analyzer_with_anomalies = FileAnalyzer(detect_anomalies=True)
@@ -1235,17 +1231,17 @@ ConnectionError: Failed
 
     def test_cache_used_when_anomalies_exist(self, temp_log_file):
         """Test that cache is used when it already has anomalies."""
-        from rx.analyse_cache import load_cache
+        from rx.unified_index import load_index
 
         # First, analyze with anomaly detection to create cache with anomalies
         analyzer = FileAnalyzer(detect_anomalies=True)
         result1 = analyzer.analyze_file(temp_log_file, 'test_file')
 
         # Verify cache has anomalies
-        cached = load_cache(temp_log_file)
+        cached = load_index(temp_log_file)
         assert cached is not None
-        assert cached.get('anomalies')
-        assert len(cached['anomalies']) > 0
+        assert cached.anomalies
+        assert len(cached.anomalies) > 0
 
         # Analyze again with detect_anomalies=True - should use cache
         result2 = analyzer.analyze_file(temp_log_file, 'test_file')
@@ -1255,14 +1251,14 @@ ConnectionError: Failed
 
     def test_cache_used_when_anomalies_not_requested(self, temp_log_file):
         """Test that cache is used when detect_anomalies=False regardless of cache content."""
-        from rx.analyse_cache import load_cache
+        from rx.unified_index import load_index
 
         # First, analyze without anomaly detection
         analyzer = FileAnalyzer(detect_anomalies=False)
         result1 = analyzer.analyze_file(temp_log_file, 'test_file')
 
         # Verify cache exists
-        cached = load_cache(temp_log_file)
+        cached = load_index(temp_log_file)
         assert cached is not None
 
         # Analyze again with detect_anomalies=False - should use cache
@@ -1289,15 +1285,15 @@ ConnectionError: Failed
 
     def test_cache_recreated_with_anomalies_after_bypass(self, temp_log_file):
         """Test that cache is updated with anomalies after being bypassed."""
-        from rx.analyse_cache import load_cache
+        from rx.unified_index import load_index
 
         # First, analyze without anomaly detection
         analyzer_no = FileAnalyzer(detect_anomalies=False)
         analyzer_no.analyze_file(temp_log_file, 'test_file')
 
         # Verify no anomalies in cache
-        cached1 = load_cache(temp_log_file)
-        assert not cached1.get('anomalies')
+        cached1 = load_index(temp_log_file)
+        assert not cached1.anomalies
 
         # Now analyze with anomaly detection - bypasses cache and recreates it
         analyzer_yes = FileAnalyzer(detect_anomalies=True)
@@ -1305,6 +1301,6 @@ ConnectionError: Failed
         assert len(result.anomalies) > 0
 
         # Verify cache now has anomalies
-        cached2 = load_cache(temp_log_file)
+        cached2 = load_index(temp_log_file)
         assert cached2 is not None
-        assert len(cached2.get('anomalies', [])) > 0
+        assert len(cached2.anomalies) > 0

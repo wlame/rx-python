@@ -21,6 +21,15 @@ class IndexType(str, Enum):
     SEEKABLE_ZSTD = 'seekable_zstd'  # Seekable zstd index
 
 
+class FileType(str, Enum):
+    """Type of file for unified indexing."""
+
+    TEXT = 'text'  # Regular text file
+    BINARY = 'binary'  # Binary file (not indexable)
+    COMPRESSED = 'compressed'  # Compressed file (gzip, xz, bz2)
+    SEEKABLE_ZSTD = 'seekable_zstd'  # Seekable zstd file
+
+
 class IndexAnalysis(BaseModel):
     """Analysis statistics stored within an index.
 
@@ -102,10 +111,7 @@ class FileIndex(BaseModel):
 
     @classmethod
     def from_dict(cls, data: dict) -> 'FileIndex':
-        """Create FileIndex from a dictionary (loaded from JSON).
-
-        Handles conversion from legacy dict format.
-        """
+        """Create FileIndex from a dictionary (loaded from JSON)."""
         # Determine index type from data
         if 'frames' in data and data.get('frames'):
             index_type = IndexType.SEEKABLE_ZSTD
@@ -146,10 +152,7 @@ class FileIndex(BaseModel):
         )
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization.
-
-        Maintains backward compatibility with legacy format.
-        """
+        """Convert to dictionary for JSON serialization."""
         result: dict[str, Any] = {
             'version': self.version,
             'source_path': self.source_path,
@@ -179,7 +182,6 @@ class FileIndex(BaseModel):
                 result['build_time_seconds'] = self.build_time_seconds
 
         elif self.index_type == IndexType.SEEKABLE_ZSTD:
-            # Use seekable zstd field names for compatibility
             result['source_zst_path'] = self.source_path
             result['source_zst_modified_at'] = self.source_modified_at
             result['source_zst_size_bytes'] = self.source_size_bytes
@@ -206,6 +208,146 @@ class FileIndex(BaseModel):
         if self.analysis and self.analysis.line_count is not None:
             return self.analysis.line_count
         return None
+
+
+class UnifiedFileIndex(BaseModel):
+    """Unified file index model for all file types.
+
+    This model combines indexing and analysis information into a single
+    cached structure. It replaces the separate FileIndex and FileAnalysisResult
+    caches with a unified approach.
+
+    Key design decisions:
+    - Without --analyze flag: Only creates index for large files (>=50MB)
+    - With --analyze flag: Creates full cache with analysis for ALL files
+    - The `analysis_performed` flag tracks if full analysis was done
+    - Cache is invalidated when source file changes (mtime/size)
+    - Cache is rebuilt when --analyze requested but analysis_performed=False
+    """
+
+    # Version & identification
+    version: int = Field(default=2, description='Cache format version')
+    source_path: str = Field(..., description='Absolute path to source file')
+    source_modified_at: str = Field(..., description='Source file modification time (ISO format)')
+    source_size_bytes: int = Field(..., description='Source file size in bytes')
+    created_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description='Index creation time')
+    build_time_seconds: float = Field(default=0.0, description='Time to build index in seconds')
+
+    # File type information
+    file_type: FileType = Field(..., description='Type of file')
+    compression_format: str | None = Field(default=None, description='Compression format (gzip, zstd, xz, bz2)')
+    is_text: bool = Field(default=True, description='Whether file contains text content')
+
+    # Basic metadata (always collected)
+    permissions: str | None = Field(default=None, description='File permissions (octal)')
+    owner: str | None = Field(default=None, description='File owner')
+
+    # Line indexing (for text/decompressed content)
+    line_index: list[list[int]] = Field(default_factory=list, description='Line number to offset mapping')
+    index_step_bytes: int | None = Field(default=None, description='Bytes between index checkpoints')
+
+    # Compression-specific
+    decompressed_size_bytes: int | None = Field(default=None, description='Decompressed size in bytes')
+    compression_ratio: float | None = Field(default=None, description='Compression ratio')
+
+    # Seekable zstd specific
+    frame_count: int | None = Field(default=None, description='Number of frames in seekable zstd')
+    frame_size_target: int | None = Field(default=None, description='Target frame size in bytes')
+    frames: list[FrameLineInfo] | None = Field(default=None, description='Frame info for seekable zstd')
+
+    # Analysis flag - KEY FIELD
+    analysis_performed: bool = Field(default=False, description='True only when --analyze was used')
+
+    # Analysis results (only populated when analysis_performed=True)
+    line_count: int | None = Field(default=None, description='Total number of lines')
+    empty_line_count: int | None = Field(default=None, description='Number of empty lines')
+    line_length_max: int | None = Field(default=None, description='Maximum line length in bytes')
+    line_length_avg: float | None = Field(default=None, description='Average line length')
+    line_length_median: float | None = Field(default=None, description='Median line length')
+    line_length_p95: float | None = Field(default=None, description='95th percentile line length')
+    line_length_p99: float | None = Field(default=None, description='99th percentile line length')
+    line_length_stddev: float | None = Field(default=None, description='Standard deviation of line lengths')
+    line_length_max_line_number: int | None = Field(default=None, description='Line number of longest line')
+    line_length_max_byte_offset: int | None = Field(default=None, description='Byte offset of longest line')
+    line_ending: str | None = Field(default=None, description='Line ending type: LF, CRLF, CR, or mixed')
+
+    # Anomaly detection results (only when analysis_performed=True)
+    anomalies: list['AnomalyRangeResult'] | None = Field(
+        default=None, description='Detected anomalies (only when analysis_performed=True)'
+    )
+    anomaly_summary: dict[str, int] | None = Field(default=None, description='Count of anomalies by category')
+
+    model_config = ConfigDict(extra='ignore')
+
+    def get_line_count(self) -> int | None:
+        """Get total line count."""
+        return self.line_count
+
+    def needs_analysis(self, analyze_requested: bool) -> bool:
+        """Check if analysis is needed.
+
+        Returns True if analyze was requested but not yet performed.
+        """
+        return analyze_requested and not self.analysis_performed
+
+    def is_valid_for_source(self, source_path: str) -> bool:
+        """Check if this index is still valid for the source file.
+
+        Args:
+            source_path: Path to source file to check against
+
+        Returns:
+            True if index is valid (file unchanged), False otherwise
+        """
+        import os
+
+        try:
+            stat = os.stat(source_path)
+            current_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
+            return self.source_modified_at == current_mtime and self.source_size_bytes == stat.st_size
+        except OSError:
+            return False
+
+    def to_file_analysis_result(self, file_id: str) -> 'FileAnalysisResult':
+        """Convert to FileAnalysisResult for API response.
+
+        Args:
+            file_id: File ID to use in result (e.g., 'f1')
+
+        Returns:
+            FileAnalysisResult with data from this index
+        """
+        from rx.file_utils import format_size
+
+        return FileAnalysisResult(
+            file=file_id,
+            size_bytes=self.source_size_bytes,
+            size_human=format_size(self.source_size_bytes),
+            is_text=self.is_text,
+            permissions=self.permissions,
+            owner=self.owner,
+            line_count=self.line_count,
+            empty_line_count=self.empty_line_count,
+            line_length_max=self.line_length_max,
+            line_length_avg=self.line_length_avg,
+            line_length_median=self.line_length_median,
+            line_length_p95=self.line_length_p95,
+            line_length_p99=self.line_length_p99,
+            line_length_stddev=self.line_length_stddev,
+            line_length_max_line_number=self.line_length_max_line_number,
+            line_length_max_byte_offset=self.line_length_max_byte_offset,
+            line_ending=self.line_ending,
+            is_compressed=self.file_type in (FileType.COMPRESSED, FileType.SEEKABLE_ZSTD),
+            compression_format=self.compression_format,
+            is_seekable_zstd=self.file_type == FileType.SEEKABLE_ZSTD,
+            decompressed_size=self.decompressed_size_bytes,
+            compression_ratio=self.compression_ratio,
+            has_index=len(self.line_index) > 0,
+            index_valid=True,
+            index_checkpoint_count=len(self.line_index) if self.line_index else None,
+            anomalies=self.anomalies,
+            anomaly_summary=self.anomaly_summary,
+        )
 
 
 class FileAnalysis(BaseModel):
@@ -812,7 +954,7 @@ class FileAnalysisResult(BaseModel):
     )
 
 
-class AnalyseResponse(BaseModel):
+class AnalyzeResponse(BaseModel):
     """Response for file analysis endpoint."""
 
     path: str = Field(..., description='Analyzed path(s)')

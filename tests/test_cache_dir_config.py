@@ -82,19 +82,19 @@ class TestTraceCacheDir:
             assert 'trace_cache' in str(result)
 
 
-class TestAnalyseCacheDir:
-    """Test that analyse_cache module respects RX_CACHE_DIR."""
+class TestUnifiedIndexCacheDir:
+    """Test that unified_index module respects RX_CACHE_DIR."""
 
-    def test_analyse_cache_dir_uses_rx_cache_dir(self, monkeypatch):
-        """Test that analyse_cache.get_analyse_cache_dir uses RX_CACHE_DIR."""
+    def test_unified_index_cache_dir_uses_rx_cache_dir(self, monkeypatch):
+        """Test that unified_index.get_index_cache_dir uses RX_CACHE_DIR."""
         with tempfile.TemporaryDirectory() as tmpdir:
             monkeypatch.setenv('RX_CACHE_DIR', tmpdir)
 
-            from rx.analyse_cache import get_analyse_cache_dir
+            from rx.unified_index import get_index_cache_dir
 
-            result = get_analyse_cache_dir()
+            result = get_index_cache_dir()
             assert str(result).startswith(tmpdir)
-            assert 'analyse_cache' in str(result)
+            assert 'indexes' in str(result)
 
 
 class TestSeekableIndexCacheDir:
@@ -116,7 +116,7 @@ class TestCompressedIndexCacheDir:
     """Test that compressed_index module respects RX_CACHE_DIR."""
 
     def test_compressed_index_dir_uses_rx_cache_dir(self, monkeypatch):
-        """Test that compressed_index.get_compressed_index_dir uses RX_CACHE_DIR."""
+        """Test that compressed_index.get_compressed_index_dir uses RX_CACHE_DIR (unified indexes dir)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             monkeypatch.setenv('RX_CACHE_DIR', tmpdir)
 
@@ -124,14 +124,16 @@ class TestCompressedIndexCacheDir:
 
             result = get_compressed_index_dir()
             assert str(result).startswith(tmpdir)
-            assert 'compressed_indexes' in str(result)
+            assert 'indexes' in str(result)
 
 
 class TestCacheIntegration:
     """Integration tests for cache directory configuration."""
 
-    def test_analyse_writes_to_custom_cache_dir(self, monkeypatch):
-        """Test that analyse actually writes cache to custom directory."""
+    def test_unified_index_writes_to_custom_cache_dir(self, monkeypatch):
+        """Test that unified index actually writes cache to custom directory."""
+        from datetime import datetime
+
         with tempfile.TemporaryDirectory() as tmpdir:
             monkeypatch.setenv('RX_CACHE_DIR', tmpdir)
 
@@ -140,20 +142,39 @@ class TestCacheIntegration:
             with open(test_file, 'w') as f:
                 f.write('test content\n' * 100)
 
-            from rx.analyse_cache import get_analyse_cache_dir, load_cache, save_cache
+            from rx.models import FileType, UnifiedFileIndex
+            from rx.unified_index import (
+                UNIFIED_INDEX_VERSION,
+                get_index_cache_dir,
+                load_index,
+                save_index,
+            )
 
-            # Save a cache entry
-            save_cache(test_file, {'test': 'data'})
+            # Create and save an index
+            stat = os.stat(test_file)
+            index = UnifiedFileIndex(
+                version=UNIFIED_INDEX_VERSION,
+                source_path=test_file,
+                source_modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                source_size_bytes=stat.st_size,
+                created_at=datetime.utcnow().isoformat(),
+                build_time_seconds=0.1,
+                file_type=FileType.TEXT,
+                is_text=True,
+                line_index=[[1, 0]],
+                line_count=100,
+            )
+            save_index(index)
 
             # Verify it was written to the custom directory
-            cache_dir = get_analyse_cache_dir()
+            cache_dir = get_index_cache_dir()
             assert str(cache_dir).startswith(tmpdir)
             assert any(cache_dir.iterdir())  # Should have at least one file
 
             # Verify we can load it back
-            loaded = load_cache(test_file)
+            loaded = load_index(test_file)
             assert loaded is not None
-            assert loaded['test'] == 'data'
+            assert loaded.line_count == 100
 
     def test_trace_cache_writes_to_custom_cache_dir(self, monkeypatch):
         """Test that trace cache writes to custom directory."""

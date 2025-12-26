@@ -888,9 +888,14 @@ class TestSamplesNegativeOffsets:
         result = self.runner.invoke(samples_command, [self.test_file, '-l', '-1', '--json'])
         assert result.exit_code == 0
 
-        # Handle potential stderr messages mixed in output (like "Analyzing file...")
+        # Handle potential stderr messages mixed in output (like "Indexing file...")
         output = result.output
-        if output.startswith('Analyzing') or output.startswith('Building') or output.startswith('Counting'):
+        if (
+            output.startswith('Analyzing')
+            or output.startswith('Building')
+            or output.startswith('Counting')
+            or output.startswith('Indexing')
+        ):
             # Skip the first line (stderr message) and parse the JSON
             output = '\n'.join(output.split('\n')[1:])
 
@@ -1088,9 +1093,14 @@ class TestSamplesMultipleLineSpecifications:
         )
         assert result.exit_code == 0
 
-        # Handle potential stderr messages mixed in output (like "Analyzing file...")
+        # Handle potential stderr messages mixed in output (like "Indexing file...")
         output = result.output
-        if output.startswith('Analyzing') or output.startswith('Building') or output.startswith('Counting'):
+        if (
+            output.startswith('Analyzing')
+            or output.startswith('Building')
+            or output.startswith('Counting')
+            or output.startswith('Indexing')
+        ):
             # Find the start of JSON (first '{')
             json_start = output.find('{')
             if json_start != -1:

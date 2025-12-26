@@ -127,7 +127,7 @@ def get_rx_cache_dir(subdir: str) -> Path:
     """Get a specific cache subdirectory for RX.
 
     Args:
-        subdir: Subdirectory name (e.g., 'indexes', 'trace_cache', 'analyse_cache')
+        subdir: Subdirectory name (e.g., 'indexes', 'trace_cache')
 
     Returns:
         Path to the cache subdirectory, created if necessary

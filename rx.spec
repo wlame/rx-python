@@ -24,7 +24,7 @@ hiddenimports = [
     'rx',
     'rx.cli',
     'rx.cli.main',
-    'rx.cli.analyse',
+    'rx.cli.analyze',
     'rx.cli.check',
     'rx.cli.index',
     'rx.cli.samples',
@@ -33,7 +33,7 @@ hiddenimports = [
     'rx.parse',
     'rx.models',
     'rx.index',
-    'rx.analyse',
+    'rx.analyze',
     'rx.regex',
     'rx.web',
     'rx.frontend_manager',  # Added for frontend download management

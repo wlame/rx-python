@@ -5,7 +5,6 @@ import sys
 
 import click
 
-from rx.analyse_cache import load_cache
 from rx.compressed_index import get_decompressed_content_at_line, get_or_build_compressed_index
 from rx.compression import CompressionFormat, detect_compression, is_compressed
 from rx.file_utils import get_context, get_context_by_lines, is_text_file
@@ -20,6 +19,7 @@ from rx.index import (
     load_index,
 )
 from rx.models import SamplesResponse
+from rx.unified_index import load_index as load_unified_index
 
 
 def parse_offset_or_range(value: str) -> tuple[int, int | None]:
@@ -183,15 +183,15 @@ def get_total_line_count(path: str) -> int:
     """
     import os
 
-    from rx.analyse import FileAnalyzer
     from rx.index import get_large_file_threshold_bytes
+    from rx.indexer import FileIndexer
 
-    # Strategy 1: Try analysis cache first
-    cache_data = load_cache(path)
-    if cache_data and 'analysis_content' in cache_data and cache_data['analysis_content'].get('line_count'):
-        return cache_data['analysis_content']['line_count']
+    # Strategy 1: Try unified index cache first
+    unified_idx = load_unified_index(path)
+    if unified_idx and unified_idx.line_count:
+        return unified_idx.line_count
 
-    # Strategy 2: Try index cache
+    # Strategy 2: Try old index cache
     if is_index_valid(path):
         index_path = get_index_path(path)
         file_index = load_index(index_path)
@@ -212,12 +212,12 @@ def get_total_line_count(path: str) -> int:
             # (subtract 1 because last_line is already counted)
             return last_line + remaining_lines - 1
 
-    # Strategy 3 & 4: For files without cache, decide based on size
+    # Strategy 3: Build index for file
     file_size = os.path.getsize(path)
     large_file_threshold = get_large_file_threshold_bytes()
 
     if file_size >= large_file_threshold:
-        # Large file: build index first
+        # Large file: build index
         click.echo('Building index for large file...', err=True)
         create_index_file(path)
         # Now retry with index
@@ -232,12 +232,12 @@ def get_total_line_count(path: str) -> int:
                     remaining_lines += 1
             return last_line + remaining_lines - 1
     else:
-        # Small file: run analysis
-        click.echo('Analyzing file...', err=True)
-        analyzer = FileAnalyzer()
-        analysis_result = analyzer.analyze_file(path, 'temp')
-        if analysis_result and analysis_result.line_count:
-            return analysis_result.line_count
+        # Small file: run indexer with analysis
+        click.echo('Indexing file...', err=True)
+        indexer = FileIndexer(analyze=True)
+        result = indexer.index_file(path)
+        if result and result.line_count:
+            return result.line_count
 
     # Fallback: count lines directly
     click.echo('Counting lines...', err=True)

@@ -5,7 +5,6 @@ import multiprocessing
 import click
 
 from rx.__version__ import __version__
-from rx.cli.analyse import analyse_command
 from rx.cli.check import check_command
 from rx.cli.compress import compress_command
 from rx.cli.index import index_command
@@ -46,10 +45,9 @@ def cli(ctx):
     \b
     Commands:
       rx <pattern> [path ...]   Trace files for patterns (default command)
-      rx analyse <path>         Analyze files (metadata, statistics)
+      rx index <path>           Create/manage file indexes (use --analyze for full analysis)
       rx check <pattern>        Analyze regex complexity
       rx compress <path>        Create seekable zstd for optimized access
-      rx index <path>           Create/manage large file indexes
       rx samples <path>         Get file content around byte offsets
       rx serve                  Start web API server
 
@@ -57,14 +55,14 @@ def cli(ctx):
     Examples:
       rx "error" /var/log/app.log
       rx "error.*failed" /var/log/ -i
-      rx analyse /var/log/app.log
+      rx index /var/log/app.log --analyze
       rx check "(a+)+"
       rx serve --port 8000
 
     \b
     For more help on each command:
       rx --help
-      rx analyse --help
+      rx index --help
       rx check --help
       rx serve --help
     """
@@ -75,7 +73,6 @@ def cli(ctx):
 
 # Register subcommands (trace is the default command)
 cli.add_command(trace_command, name='trace')
-cli.add_command(analyse_command, name='analyse')
 cli.add_command(check_command, name='check')
 cli.add_command(compress_command, name='compress')
 cli.add_command(index_command, name='index')

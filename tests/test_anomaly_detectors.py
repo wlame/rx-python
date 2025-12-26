@@ -4,7 +4,7 @@ from collections import deque
 
 import pytest
 
-from rx.analyse import (
+from rx.analyze import (
     AnomalyDetector,
     ErrorKeywordDetector,
     FormatDeviationDetector,
@@ -354,7 +354,7 @@ class TestBoundedAnomalyHeap:
     """Tests for BoundedAnomalyHeap memory-efficient structure."""
 
     def setup_method(self):
-        from rx.analyse import BoundedAnomalyHeap
+        from rx.analyze import BoundedAnomalyHeap
 
         self.BoundedAnomalyHeap = BoundedAnomalyHeap
 
@@ -437,7 +437,7 @@ class TestSparseLineOffsets:
     """Tests for SparseLineOffsets memory-efficient structure."""
 
     def setup_method(self):
-        from rx.analyse import SparseLineOffsets
+        from rx.analyze import SparseLineOffsets
 
         self.SparseLineOffsets = SparseLineOffsets
 

@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from rx.analyse import FileAnalyzer, analyse_path
-from rx.analyse_cache import clear_all_caches, load_cache
+from rx.analyzer import FileAnalyzer, analyze_path
+from rx.unified_index import clear_all_indexes, load_index
 
 
 class TestCompressedFileAnalysis:
     """Test analysis of compressed files."""
 
-    def test_analyse_gzip_file(self, tmp_path):
+    def test_analyze_gzip_file(self, tmp_path):
         """Test analyzing a gzip compressed file."""
         # Create a test file
         test_content = 'Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n'
@@ -44,7 +44,7 @@ class TestCompressedFileAnalysis:
         assert result.empty_line_count == 0
         assert result.line_length_max == 6  # "Line X"
 
-    def test_analyse_zstd_file(self, tmp_path):
+    def test_analyze_zstd_file(self, tmp_path):
         """Test analyzing a zstd compressed file."""
         pytest.importorskip('zstandard')
 
@@ -73,7 +73,7 @@ class TestCompressedFileAnalysis:
         assert result.is_text is True
         assert result.line_count == 2
 
-    def test_analyse_shows_compression_info(self, tmp_path):
+    def test_analyze_shows_compression_info(self, tmp_path):
         """Test that compression information is properly populated."""
         # Create and compress a file
         test_content = 'A' * 1000 + '\n' + 'B' * 1000 + '\n'
@@ -85,7 +85,7 @@ class TestCompressedFileAnalysis:
             f_out.write(f_in.read())
 
         # Analyze
-        result = analyse_path([str(gz_file)])
+        result = analyze_path([str(gz_file)])
 
         assert len(result['results']) == 1
         file_result = result['results'][0]
@@ -98,7 +98,7 @@ class TestCompressedFileAnalysis:
         assert file_result['decompressed_size'] == len(test_content.encode())
         assert file_result['compression_ratio'] > 1  # Should compress well
 
-    def test_analyse_binary_compressed_file(self, tmp_path):
+    def test_analyze_binary_compressed_file(self, tmp_path):
         """Test analyzing a compressed binary file (should not analyze content)."""
         # Create a binary file
         binary_content = bytes([0xFF, 0xD8, 0xFF, 0xE0] * 100)  # JPEG-like header
@@ -149,14 +149,14 @@ class TestCompressedFileAnalysis:
         assert result.is_text is True
 
 
-class TestAnalyseCache:
+class TestAnalyzeCache:
     """Test cache integration with compressed files."""
 
     def teardown_method(self):
         """Clean up caches after each test."""
-        clear_all_caches()
+        clear_all_indexes()
 
-    def test_analyse_cache_hit(self, tmp_path):
+    def test_analyze_cache_hit(self, tmp_path):
         """Test that cache is used on second analysis."""
         # Create and compress a file
         test_content = 'Cached content\n'
@@ -171,10 +171,10 @@ class TestAnalyseCache:
         analyzer = FileAnalyzer()
         result1 = analyzer.analyze_file(str(gz_file), 'f1')
 
-        # Verify cache was created
-        cached = load_cache(str(gz_file))
+        # Verify cache was created (unified index)
+        cached = load_index(str(gz_file))
         assert cached is not None
-        assert cached['is_compressed'] is True
+        assert cached.compression_format is not None
 
         # Second analysis should hit cache
         result2 = analyzer.analyze_file(str(gz_file), 'f2')
@@ -184,7 +184,7 @@ class TestAnalyseCache:
         assert result2.line_count == result1.line_count
         assert result2.decompressed_size == result1.decompressed_size
 
-    def test_analyse_cache_invalidated_on_change(self, tmp_path):
+    def test_analyze_cache_invalidated_on_change(self, tmp_path):
         """Test that cache is invalidated when file changes."""
         # Create and compress a file
         test_content = 'Original content\n'
@@ -217,7 +217,7 @@ class TestAnalyseCache:
 class TestIndexInfo:
     """Test index information detection."""
 
-    def test_analyse_shows_index_info_for_regular_file(self, tmp_path):
+    def test_analyze_shows_index_info_for_regular_file(self, tmp_path):
         """Test that index info is shown for indexed files."""
         # Create a large file that will get indexed
         test_content = 'Line\n' * 10000
@@ -243,7 +243,7 @@ class TestIndexInfo:
         assert result2.index_valid is True
         assert result2.index_checkpoint_count is not None
 
-    def test_analyse_shows_no_index_for_small_file(self, tmp_path):
+    def test_analyze_shows_no_index_for_small_file(self, tmp_path):
         """Test that small files show no index info."""
         # Create a small file
         test_content = 'Small file\n'
@@ -262,7 +262,7 @@ class TestIndexInfo:
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_analyse_empty_compressed_file(self, tmp_path):
+    def test_analyze_empty_compressed_file(self, tmp_path):
         """Test analyzing an empty compressed file."""
         # Create empty file and compress
         text_file = tmp_path / 'empty.txt'
@@ -280,7 +280,7 @@ class TestEdgeCases:
         assert result.is_compressed is True
         assert result.line_count == 0 or result.line_count == 1  # Depends on implementation
 
-    def test_analyse_nonexistent_file(self, tmp_path):
+    def test_analyze_nonexistent_file(self, tmp_path):
         """Test analyzing a non-existent file returns minimal result."""
         # Try to analyze non-existent file
         analyzer = FileAnalyzer()
@@ -290,7 +290,7 @@ class TestEdgeCases:
         assert result.size_bytes == 0
         assert result.is_text is False
 
-    def test_analyse_corrupted_compressed_file(self, tmp_path):
+    def test_analyze_corrupted_compressed_file(self, tmp_path):
         """Test analyzing a corrupted compressed file."""
         # Create a fake gzip file (just header, no valid data)
         gz_file = tmp_path / 'corrupted.txt.gz'
@@ -305,11 +305,11 @@ class TestEdgeCases:
         # May or may not have line count depending on decompression failure handling
 
 
-class TestAnalyseSeekableZstdIndex:
-    """Test analyse with seekable zstd files that have indexes."""
+class TestAnalyzeSeekableZstdIndex:
+    """Test analyze with seekable zstd files that have indexes."""
 
-    def test_analyse_seekable_zstd_with_index_info(self, tmp_path):
-        """Test that analyse correctly reads index info from seekable zstd files.
+    def test_analyze_seekable_zstd_with_index_info(self, tmp_path):
+        """Test that analyze correctly reads index info from seekable zstd files.
 
         This is a regression test for the error:
         'SeekableIndex' object has no attribute 'get'

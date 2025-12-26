@@ -65,7 +65,7 @@ def temp_gzip_large():
 def temp_index_dir(tmp_path, monkeypatch):
     """Create a temporary index directory using RX_CACHE_DIR env var."""
     monkeypatch.setenv('RX_CACHE_DIR', str(tmp_path))
-    yield tmp_path / 'rx' / 'compressed_indexes'
+    yield tmp_path / 'rx' / 'indexes'
 
 
 @pytest.fixture

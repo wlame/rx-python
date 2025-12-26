@@ -1,0 +1,384 @@
+"""Unified file indexer module.
+
+This module provides the FileIndexer class which creates UnifiedFileIndex
+entries for files, combining line indexing and optional analysis.
+
+Key behaviors:
+- Without --analyze: Only index large files (>=50MB)
+- With --analyze: Index ALL files with full analysis + anomaly detection
+"""
+
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from time import time
+
+from rx import index as line_index
+from rx import seekable_index, seekable_zstd
+from rx.analyze import default_detectors
+from rx.compression import detect_compression, is_compressed
+from rx.file_utils import is_text_file
+from rx.index import get_index_step_bytes
+from rx.models import AnomalyRangeResult, FileType, FrameLineInfo, UnifiedFileIndex
+from rx.unified_index import (
+    load_index,
+    needs_rebuild,
+    save_index,
+    should_create_index,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+class IndexResult:
+    """Result of indexing one or more files."""
+
+    def __init__(self):
+        self.indexed: list[UnifiedFileIndex] = []
+        self.skipped: list[str] = []
+        self.errors: list[tuple[str, str]] = []
+        self.total_time: float = 0.0
+
+    @property
+    def count(self) -> int:
+        return len(self.indexed)
+
+
+class FileIndexer:
+    """Creates unified file indexes with optional analysis.
+
+    This class provides the main entry point for the `rx index` command
+    and `/v1/index` API endpoint.
+
+    Key behaviors:
+    - analyze=False: Only create index for large files (>=50MB)
+    - analyze=True: Create full index with analysis for ALL files
+    """
+
+    def __init__(self, analyze: bool = False, force: bool = False):
+        """Initialize the indexer.
+
+        Args:
+            analyze: If True, run full analysis including anomaly detection
+            force: If True, rebuild index even if valid cache exists
+        """
+        self.analyze = analyze
+        self.force = force
+        self.detectors = default_detectors() if analyze else []
+
+    def index_file(self, filepath: str) -> UnifiedFileIndex | None:
+        """Index a single file.
+
+        Args:
+            filepath: Path to file to index
+
+        Returns:
+            UnifiedFileIndex if successful, None if skipped or error
+        """
+        filepath = os.path.abspath(filepath)
+
+        if not os.path.isfile(filepath):
+            logger.warning(f'Not a file: {filepath}')
+            return None
+
+        try:
+            stat = os.stat(filepath)
+            file_size = stat.st_size
+
+            # Check if we should create an index at all
+            if not should_create_index(file_size, self.analyze):
+                logger.debug(f'Skipping small file without --analyze: {filepath}')
+                return None
+
+            # Check for valid cached index
+            if not self.force:
+                cached = load_index(filepath)
+                if cached and not needs_rebuild(filepath, cached, self.analyze):
+                    logger.debug(f'Using cached index: {filepath}')
+                    return cached
+
+            # Build new index
+            start_time = time()
+            idx = self._build_index(filepath, stat)
+            idx.build_time_seconds = time() - start_time
+
+            # Save to cache
+            save_index(idx)
+
+            return idx
+
+        except Exception as e:
+            logger.error(f'Failed to index {filepath}: {e}')
+            return None
+
+    def index_paths(
+        self,
+        paths: list[str],
+        recursive: bool = True,
+        max_workers: int = 10,
+    ) -> IndexResult:
+        """Index multiple files/directories in parallel.
+
+        Args:
+            paths: List of file or directory paths
+            recursive: If True, recurse into directories
+            max_workers: Maximum parallel workers
+
+        Returns:
+            IndexResult with all indexed files and statistics
+        """
+        result = IndexResult()
+        start_time = time()
+
+        # Collect all files to process
+        files_to_process: list[str] = []
+        for path in paths:
+            path = os.path.abspath(path)
+            if os.path.isfile(path):
+                files_to_process.append(path)
+            elif os.path.isdir(path):
+                if recursive:
+                    for root, _, files in os.walk(path):
+                        for f in files:
+                            files_to_process.append(os.path.join(root, f))
+                else:
+                    for f in os.listdir(path):
+                        fp = os.path.join(path, f)
+                        if os.path.isfile(fp):
+                            files_to_process.append(fp)
+
+        if not files_to_process:
+            result.total_time = time() - start_time
+            return result
+
+        # Process files in parallel
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {executor.submit(self.index_file, f): f for f in files_to_process}
+
+            for future in as_completed(future_to_file):
+                filepath = future_to_file[future]
+                try:
+                    idx = future.result()
+                    if idx:
+                        result.indexed.append(idx)
+                    else:
+                        result.skipped.append(filepath)
+                except Exception as e:
+                    result.errors.append((filepath, str(e)))
+
+        result.total_time = time() - start_time
+        return result
+
+    def _build_index(self, filepath: str, stat: os.stat_result) -> UnifiedFileIndex:
+        """Build a new index for a file.
+
+        Args:
+            filepath: Absolute path to file
+            stat: os.stat result for the file
+
+        Returns:
+            UnifiedFileIndex with all computed data
+        """
+        # Determine file type
+        file_type = self._detect_file_type(filepath)
+
+        # Get file metadata
+        mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
+        permissions = oct(stat.st_mode)[-3:]
+
+        try:
+            import pwd
+
+            owner = pwd.getpwuid(stat.st_uid).pw_name
+        except (ImportError, KeyError):
+            owner = str(stat.st_uid)
+
+        # Create base index
+        idx = UnifiedFileIndex(
+            source_path=filepath,
+            source_modified_at=mtime,
+            source_size_bytes=stat.st_size,
+            file_type=file_type,
+            is_text=file_type == FileType.TEXT,
+            permissions=permissions,
+            owner=owner,
+            analysis_performed=self.analyze,
+        )
+
+        # Handle different file types
+        if file_type == FileType.BINARY:
+            # Binary files - no line indexing
+            return idx
+
+        elif file_type == FileType.TEXT:
+            # Regular text file
+            self._build_text_index(filepath, idx)
+
+        elif file_type == FileType.COMPRESSED:
+            # Compressed file (gzip, xz, bz2)
+            self._build_compressed_index(filepath, idx)
+
+        elif file_type == FileType.SEEKABLE_ZSTD:
+            # Seekable zstd file
+            self._build_seekable_zstd_index(filepath, idx)
+
+        return idx
+
+    def _detect_file_type(self, filepath: str) -> FileType:
+        """Detect the type of a file."""
+        if seekable_zstd.is_seekable_zstd(filepath):
+            return FileType.SEEKABLE_ZSTD
+        elif is_compressed(filepath):
+            comp = detect_compression(filepath)
+            if comp:
+                return FileType.COMPRESSED
+
+        if is_text_file(filepath):
+            return FileType.TEXT
+
+        return FileType.BINARY
+
+    def _build_text_index(self, filepath: str, idx: UnifiedFileIndex) -> None:
+        """Build index for a regular text file.
+
+        Args:
+            filepath: Path to text file
+            idx: UnifiedFileIndex to populate
+        """
+        # Use existing line_index module for line offset mapping
+        try:
+            build_result = line_index.build_index(filepath)
+            if build_result:
+                idx.line_index = build_result.line_index
+                idx.index_step_bytes = get_index_step_bytes()
+
+                # Copy analysis stats from build result (stats are directly on IndexBuildResult)
+                idx.line_count = build_result.line_count
+                idx.empty_line_count = build_result.empty_line_count
+                idx.line_length_max = build_result.line_length_max
+                idx.line_length_avg = build_result.line_length_avg
+                idx.line_length_median = build_result.line_length_median
+                idx.line_length_p95 = build_result.line_length_p95
+                idx.line_length_p99 = build_result.line_length_p99
+                idx.line_length_stddev = build_result.line_length_stddev
+                idx.line_length_max_line_number = build_result.line_length_max_line_number
+                idx.line_length_max_byte_offset = build_result.line_length_max_byte_offset
+                idx.line_ending = build_result.line_ending
+
+        except Exception as e:
+            logger.warning(f'Failed to build line index for {filepath}: {e}')
+
+        # Run anomaly detection if analyze mode
+        if self.analyze and self.detectors:
+            self._run_anomaly_detection(filepath, idx)
+
+    def _build_compressed_index(self, filepath: str, idx: UnifiedFileIndex) -> None:
+        """Build index for a compressed file.
+
+        Args:
+            filepath: Path to compressed file
+            idx: UnifiedFileIndex to populate
+        """
+        comp = detect_compression(filepath)
+        if comp:
+            idx.compression_format = comp.value
+
+        # Try to get decompressed info from existing compressed_index
+        try:
+            from rx import compressed_index
+
+            comp_idx = compressed_index.load_index(filepath)
+            if comp_idx:
+                idx.line_index = comp_idx.line_index
+                idx.decompressed_size_bytes = comp_idx.decompressed_size_bytes
+                idx.line_count = comp_idx.total_lines
+
+                if idx.decompressed_size_bytes and idx.source_size_bytes:
+                    idx.compression_ratio = idx.decompressed_size_bytes / idx.source_size_bytes
+
+        except Exception as e:
+            logger.debug(f'Could not load compressed index: {e}')
+
+    def _build_seekable_zstd_index(self, filepath: str, idx: UnifiedFileIndex) -> None:
+        """Build index for a seekable zstd file.
+
+        Args:
+            filepath: Path to seekable zstd file
+            idx: UnifiedFileIndex to populate
+        """
+        idx.compression_format = 'zstd'
+
+        try:
+            # Use existing seekable_index module
+            szst_idx = seekable_index.get_or_build_index(filepath)
+            if szst_idx:
+                idx.line_index = szst_idx.line_index
+                idx.frame_count = szst_idx.frame_count
+                idx.frame_size_target = szst_idx.frame_size_target
+                idx.decompressed_size_bytes = szst_idx.decompressed_size_bytes
+                idx.line_count = szst_idx.total_lines
+
+                # Convert frames
+                if szst_idx.frames:
+                    idx.frames = [
+                        FrameLineInfo(
+                            index=f.index,
+                            compressed_offset=f.compressed_offset,
+                            compressed_size=f.compressed_size,
+                            decompressed_offset=f.decompressed_offset,
+                            decompressed_size=f.decompressed_size,
+                            first_line=f.first_line,
+                            last_line=f.last_line,
+                            line_count=f.line_count,
+                        )
+                        for f in szst_idx.frames
+                    ]
+
+                if idx.decompressed_size_bytes and idx.source_size_bytes:
+                    idx.compression_ratio = idx.decompressed_size_bytes / idx.source_size_bytes
+
+        except Exception as e:
+            logger.warning(f'Failed to build seekable zstd index: {e}')
+
+    def _run_anomaly_detection(self, filepath: str, idx: UnifiedFileIndex) -> None:
+        """Run anomaly detection on a file.
+
+        This is a simplified version - the full implementation will use
+        the existing FileAnalyzer anomaly detection logic.
+
+        Args:
+            filepath: Path to file
+            idx: UnifiedFileIndex to populate with anomalies
+        """
+        try:
+            from rx.analyzer import FileAnalyzer
+
+            analyzer = FileAnalyzer(
+                use_index_cache=False,
+                detect_anomalies=True,
+                anomaly_detectors=self.detectors,
+            )
+
+            result = analyzer.analyze_file(filepath, 'f1')
+
+            # Copy anomalies to unified index
+            if result.anomalies:
+                idx.anomalies = [
+                    AnomalyRangeResult(
+                        start_line=a.start_line,
+                        end_line=a.end_line,
+                        start_offset=a.start_offset,
+                        end_offset=a.end_offset,
+                        severity=a.severity,
+                        category=a.category,
+                        description=a.description,
+                        detector=a.detector,
+                    )
+                    for a in result.anomalies
+                ]
+                idx.anomaly_summary = result.anomaly_summary
+
+        except Exception as e:
+            logger.warning(f'Anomaly detection failed for {filepath}: {e}')

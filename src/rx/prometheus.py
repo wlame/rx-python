@@ -19,9 +19,9 @@ samples_requests_total = Counter('rx_samples_requests_total', 'Total number of s
 # Total number of complexity analysis requests
 complexity_requests_total = Counter('rx_complexity_requests_total', 'Total number of complexity analysis requests')
 
-# Total number of analyse requests
-analyse_requests_total = Counter(
-    'rx_analyse_requests_total',
+# Total number of analyze requests
+analyze_requests_total = Counter(
+    'rx_analyze_requests_total',
     'Total number of file analysis requests',
     ['status'],  # success, error
 )
@@ -53,8 +53,8 @@ complexity_duration_seconds = Histogram(
     # 0.1ms to 1s - complexity analysis is very fast
 )
 
-analyse_duration_seconds = Histogram(
-    'rx_analyse_duration_seconds',
+analyze_duration_seconds = Histogram(
+    'rx_analyze_duration_seconds',
     'Time spent processing file analysis requests',
     buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0],
     # 10ms to 60s - file analysis can take time for large files or many files
@@ -368,7 +368,7 @@ def record_complexity_request(duration: float, score: int, level: str):
     regex_complexity_level.labels(level=level).inc()
 
 
-def record_analyse_request(
+def record_analyze_request(
     status: str, duration: float, num_files: int, num_skipped: int, total_bytes: int, num_workers: int
 ):
     """
@@ -382,8 +382,8 @@ def record_analyse_request(
         total_bytes: Total bytes analyzed
         num_workers: Number of parallel workers used
     """
-    analyse_requests_total.labels(status=status).inc()
-    analyse_duration_seconds.observe(duration)
+    analyze_requests_total.labels(status=status).inc()
+    analyze_duration_seconds.observe(duration)
     files_processed_total.inc(num_files)
     files_skipped_total.inc(num_skipped)
     bytes_processed_total.inc(total_bytes)

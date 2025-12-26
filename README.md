@@ -80,7 +80,7 @@ source ~/.bashrc
 _RX_COMPLETE=fish_source rx > ~/.config/fish/completions/rx.fish
 ```
 
-After setup, `rx <Tab>` will suggest subcommands (`analyse`, `trace`, etc.) and options.
+After setup, `rx <Tab>` will suggest subcommands (`index`, `trace`, etc.) and options.
 
 ## Quick Start
 
@@ -100,8 +100,8 @@ rx "error" /var/log/app.log --samples --context=3
 cat /var/log/app.log | rx "error"
 docker logs mycontainer | rx "error"
 
-# Analyze file metadata
-rx analyse /var/log/app.log
+# Index and analyze file metadata
+rx index /var/log/app.log --analyze
 
 # Check regex complexity
 rx check "(a+)+"
@@ -136,7 +136,7 @@ rx serve --port=8000
 
 # Use HTTP API (same endpoints as CLI)
 curl "http://localhost:8000/v1/trace?path=/var/log/app.log&regexp=error"
-curl "http://localhost:8000/v1/analyse?path=/var/log/"
+curl "http://localhost:8000/v1/analyze?path=/var/log/"
 ```
 
 **Benefits:**
@@ -180,37 +180,34 @@ echo "test error" | rx "error"             # Search from echo
 rx "error" -                               # Read from stdin (- means stdin)
 ```
 
-### `rx analyse`
-Extract file metadata and statistics (works with text and compressed files).
+### `rx index`
+Create line-offset index for files with optional full analysis and anomaly detection.
 
 ```bash
-rx analyse /var/log/app.log               # Single file
-rx analyse /var/log/app.log.gz            # Compressed file (auto-decompressed)
-rx analyse /var/log/                      # Directory
-rx analyse /var/log/ --max-workers=20     # Parallel processing
-rx analyse /var/log/app.log --json        # JSON output with all metrics
+rx index /var/log/huge.log                # Index large files only (>=50MB)
+rx index /var/log/app.log --analyze       # Index all files with full analysis
+rx index /var/log/ --analyze -r           # Recursive directory analysis
+rx index /var/log/app.log --info          # Show index info
+rx index /var/log/app.log --delete        # Delete index
+rx index /var/log/app.log --analyze --json # JSON output
 ```
 
-**Output includes:**
+**Index behavior:**
+- Without `--analyze`: Only indexes large files (>=50MB) for line-based access
+- With `--analyze`: Indexes ALL files with full analysis + anomaly detection
+
+**Analysis output includes:**
 - File size (bytes and human-readable)
 - Compression info (format, ratio, decompressed size)
-- Index info (if indexed, checkpoint count, validity)
 - Line statistics (count, length metrics, endings)
-- All results cached for instant repeated access
+- Anomaly detection (errors, tracebacks, warnings)
+- All results cached at `~/.cache/rx/indexes/` for instant repeated access
 
 ### `rx check`
 Analyze regex complexity and detect ReDoS vulnerabilities.
 
 ```bash
 rx check "(a+)+"                          # Returns risk level and fixes
-```
-
-### `rx index`
-Create line-offset index for large files.
-
-```bash
-rx index /var/log/huge.log                # Create index
-rx index /var/log/huge.log --info         # Show index info
 ```
 
 ### `rx samples`
@@ -247,7 +244,7 @@ Once the server is running, visit http://localhost:8000/docs for interactive API
 
 **Main Endpoints:**
 - `GET /v1/trace` - Search files for patterns
-- `GET /v1/analyse` - File metadata and statistics (including compressed files)
+- `GET /v1/index` - File indexing with optional analysis and anomaly detection
 - `GET /v1/complexity` - Regex complexity analysis
 - `GET /v1/samples` - Extract context lines
 - `GET /health` - Server health and configuration
@@ -263,8 +260,8 @@ Once the server is running, visit http://localhost:8000/docs for interactive API
 # Search
 curl "http://localhost:8000/v1/trace?path=/var/log/app.log&regexp=error&max_results=10"
 
-# Analyse (works with compressed files too)
-curl "http://localhost:8000/v1/analyse?path=/var/log/app.log.gz"
+# Index with analysis (works with compressed files too)
+curl "http://localhost:8000/v1/index?path=/var/log/app.log&analyze=true"
 
 # Start background compression (returns immediately with task_id)
 curl -X POST "http://localhost:8000/v1/compress" \
@@ -328,7 +325,7 @@ rx "error" /var/log/app.log.gz -i --json
 
 ```bash
 # Full analysis with automatic decompression
-rx analyse /var/log/app.log.gz
+rx analyze /var/log/app.log.gz
 
 # Output includes compression info:
 # Compressed: gzip, ratio: 5.2x, decompressed: 2.5 GB
@@ -369,8 +366,7 @@ curl -X POST "http://localhost:8000/v1/compress" \
 
 - Regular compressed files (gzip, xz, bzip2) processed sequentially
 - Seekable zstd supports parallel frame access (Tier 2 - coming soon)
-- Decompression index cached at `~/.cache/rx/compressed_indexes/`
-- Analysis results cached at `~/.cache/rx/analyse_cache/` for instant repeated access
+- All indexes cached at `~/.cache/rx/indexes/` for instant repeated access
 
 ### API Usage
 
@@ -378,8 +374,8 @@ curl -X POST "http://localhost:8000/v1/compress" \
 # Search compressed file
 curl "http://localhost:8000/v1/trace?path=/var/log/syslog.1.gz&regexp=error"
 
-# Analyze compressed file (includes compression info)
-curl "http://localhost:8000/v1/analyse?path=/var/log/app.log.gz"
+# Index and analyze file (includes compression info, anomaly detection)
+curl "http://localhost:8000/v1/index?path=/var/log/app.log.gz&analyze=true"
 
 # Get samples (use lines parameter, not offsets)
 curl "http://localhost:8000/v1/samples?path=/var/log/syslog.1.gz&lines=100,200&context=3"
@@ -400,7 +396,7 @@ curl -X POST "http://localhost:8000/v1/compress" \
 
 ### Completed Features ✅
 - **Compressed File Support** - Analyze and search gzip, zstd, xz, bzip2 files
-- **File Analysis Caching** - Cache analysis results at `~/.cache/rx/analyse_cache/`
+- **File Analysis Caching** - Cache analysis results at `~/.cache/rx/indexes/`
 - **Background Tasks** - Compression and indexing endpoints with progress tracking
 - **Seekable Zstd** - Frame-based indexing for random access without full decompression
 - **Enhanced Analysis** - Compression info, index info, detailed statistics

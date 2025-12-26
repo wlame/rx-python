@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Constants
 INDEX_VERSION = 1
-DEFAULT_LARGE_FILE_MB = 100  # Default threshold if RX_LARGE_FILE_MB not set
+DEFAULT_LARGE_FILE_MB = 50  # Default threshold if RX_LARGE_FILE_MB not set
 
 
 @dataclass

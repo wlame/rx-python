@@ -22,7 +22,6 @@ from rx import file_utils as file_utils_module
 from rx import prometheus as prom
 from rx import trace as trace_module
 from rx.__version__ import __version__
-from rx.analyse import analyse_path
 from rx.compressed_index import get_decompressed_content_at_line, get_or_build_compressed_index
 from rx.compression import CompressionFormat, detect_compression, is_compressed
 from rx.file_utils import get_context, get_context_by_lines, is_text_file, validate_file
@@ -42,8 +41,8 @@ from rx.index import (
     is_index_valid,
     load_index,
 )
+from rx.indexer import FileIndexer
 from rx.models import (
-    AnalyseResponse,
     ComplexityResponse,
     CompressRequest,
     IndexRequest,
@@ -652,52 +651,44 @@ async def complexity(
 
 
 @app.get(
-    '/v1/analyse',
-    tags=['Analysis'],
-    summary='Analyze files',
-    response_model=AnalyseResponse,
+    '/v1/index',
+    tags=['Indexing'],
+    summary='Index files with optional analysis',
     responses={
-        200: {'description': 'File analysis completed'},
+        200: {'description': 'File indexing completed'},
         404: {'description': 'Path not found'},
-        500: {'description': 'Internal error during analysis'},
+        500: {'description': 'Internal error during indexing'},
     },
 )
-async def analyse(
-    path: str | list[str] = Query(
-        ..., description='File or directory path(s) to analyze', examples=['/var/log/app.log']
-    ),
+async def index_files(
+    path: str | list[str] = Query(..., description='File or directory path(s) to index', examples=['/var/log/app.log']),
+    analyze: bool = Query(False, description='Run full analysis with anomaly detection (indexes ALL files)'),
+    force: bool = Query(False, description='Force rebuild even if valid index exists'),
+    recursive: bool = Query(True, description='Recursively process directories'),
     max_workers: int = Query(10, description='Maximum number of parallel workers', ge=1, le=50, examples=[10]),
-    detect_anomalies: bool = Query(
-        False, description='Detect anomalies in log files (tracebacks, errors, format deviations)'
-    ),
 ) -> dict:
     """
-    Analyze files to extract metadata and statistics.
+    Index files with optional analysis and anomaly detection.
 
-    This endpoint analyzes text and binary files, providing:
-    - File size (bytes and human-readable)
-    - File metadata (creation time, modification time, permissions, owner)
-    - For text files: line count, empty lines, line length statistics
+    This endpoint creates unified file indexes that enable efficient line-based
+    access to large text files.
 
-    **Analysis is performed in parallel using multiple threads.**
+    **Index behavior:**
+    - Without **analyze=true**: Only indexes files >= 50MB
+    - With **analyze=true**: Indexes ALL files with full analysis
 
-    With **detect_anomalies=true**, the endpoint also detects:
+    **With analyze=true, the endpoint also detects:**
     - Python/Java/JavaScript/Go/Rust stack traces
     - Lines containing ERROR, FATAL, Exception keywords
-    - Unusually long lines (>3 standard deviations from mean)
-    - Unusual indentation blocks
+    - Unusually long lines (statistical outliers)
+    - High-entropy strings (potential secrets)
+    - Format deviations from dominant log pattern
 
-    Returns:
-    - **path**: Analyzed path(s)
-    - **time**: Analysis time in seconds
-    - **files**: File ID to filepath mapping (e.g., {"f1": "/path/to/file"})
-    - **results**: List of analysis results for each file
-    - **scanned_files**: List of successfully scanned files
-    - **skipped_files**: List of files that failed analysis
-    - **anomalies**: List of detected anomalies (when detect_anomalies=true)
-    - **anomaly_summary**: Count by category (when detect_anomalies=true)
-
-    The plugin architecture allows easy extension with custom metrics.
+    **Returns:**
+    - **indexed**: List of successfully indexed files with metadata
+    - **skipped**: Files skipped (below threshold or not text)
+    - **errors**: Files that failed to index
+    - **total_time**: Total indexing time in seconds
     """
     try:
         # Convert single path to list
@@ -709,57 +700,72 @@ async def analyse(
             paths = [str(p) for p in validated_paths]
         except PermissionError as e:
             prom.record_error('access_denied')
-            prom.record_http_response('GET', '/v1/analyse', 403)
+            prom.record_http_response('GET', '/v1/index', 403)
             raise HTTPException(status_code=403, detail=str(e))
 
         # Check paths exist
         for p in paths:
             if not os.path.exists(p):
                 prom.record_error('not_found')
-                prom.record_http_response('GET', '/v1/analyse', 404)
+                prom.record_http_response('GET', '/v1/index', 404)
                 raise HTTPException(status_code=404, detail=f'Path not found: {p}')
 
-        time_before = time()
-        # Offload blocking file analysis to thread pool
+        # Create indexer and run
+        indexer = FileIndexer(analyze=analyze, force=force)
+
+        # Offload blocking file indexing to thread pool
         result = await anyio.to_thread.run_sync(
             partial(
-                analyse_path,
+                indexer.index_paths,
                 paths=paths,
+                recursive=recursive,
                 max_workers=max_workers,
-                detect_anomalies=detect_anomalies,
             )
         )
-        duration = time() - time_before
+
+        # Build response
+        response = {
+            'indexed': [
+                {
+                    'path': idx.source_path,
+                    'file_type': idx.file_type.value,
+                    'size_bytes': idx.source_size_bytes,
+                    'line_count': idx.line_count,
+                    'index_entries': len(idx.line_index),
+                    'analysis_performed': idx.analysis_performed,
+                    'build_time_seconds': idx.build_time_seconds,
+                    'anomaly_count': len(idx.anomalies) if idx.anomalies else 0,
+                    'anomaly_summary': idx.anomaly_summary,
+                }
+                for idx in result.indexed
+            ],
+            'skipped': result.skipped,
+            'errors': [{'path': p, 'error': e} for p, e in result.errors],
+            'total_time': result.total_time,
+        }
 
         # Record metrics
-        num_files = len(result.get('scanned_files', []))
-        num_skipped = len(result.get('skipped_files', []))
-
-        # Calculate total bytes analyzed
-        total_bytes = 0
-        for file_result in result.get('results', []):
-            total_bytes += file_result.get('size_bytes', 0)
-
-        prom.record_analyse_request(
+        total_bytes = sum(idx.source_size_bytes for idx in result.indexed)
+        prom.record_analyze_request(
             status='success',
-            duration=duration,
-            num_files=num_files,
-            num_skipped=num_skipped,
+            duration=result.total_time,
+            num_files=len(result.indexed),
+            num_skipped=len(result.skipped),
             total_bytes=total_bytes,
             num_workers=max_workers,
         )
-        prom.record_http_response('GET', '/v1/analyse', 200)
+        prom.record_http_response('GET', '/v1/index', 200)
 
-        return result
+        return response
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f'Error analyzing files: {e!s}')
+        logger.error(f'Error indexing files: {e!s}')
         prom.record_error('internal_error')
-        prom.record_analyse_request(
+        prom.record_analyze_request(
             status='error', duration=0, num_files=0, num_skipped=0, total_bytes=0, num_workers=max_workers
         )
-        prom.record_http_response('GET', '/v1/analyse', 500)
+        prom.record_http_response('GET', '/v1/index', 500)
         raise HTTPException(status_code=500, detail=f'Internal error: {e!s}')
 
 
@@ -915,14 +921,14 @@ def get_total_line_count(path: str) -> int:
     Returns:
         Total number of lines in the file
     """
-    from rx.analyse_cache import load_cache
+    from rx.unified_index import load_index as load_unified_index
 
-    # Try analysis cache first
-    cache_data = load_cache(path)
-    if cache_data and 'analysis_content' in cache_data and cache_data['analysis_content'].get('line_count'):
-        return cache_data['analysis_content']['line_count']
+    # Try unified index cache first
+    unified_idx = load_unified_index(path)
+    if unified_idx and unified_idx.line_count:
+        return unified_idx.line_count
 
-    # Try index cache
+    # Try old index cache
     if is_index_valid(path):
         index_path = get_index_path(path)
         file_index = load_index(index_path)
