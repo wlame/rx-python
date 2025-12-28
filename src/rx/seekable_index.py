@@ -32,8 +32,9 @@ from rx.utils import get_rx_cache_dir
 
 logger = logging.getLogger(__name__)
 
-# Index version for compatibility checking
-SEEKABLE_INDEX_VERSION = 1
+# Import unified index version for consistency
+from rx.unified_index import UNIFIED_INDEX_VERSION
+
 
 # Sampling interval for line index (every N lines)
 LINE_INDEX_INTERVAL = 10000
@@ -105,7 +106,7 @@ class SeekableIndex:
         """Create SeekableIndex from dictionary."""
         frames = [FrameLineInfo(**f) for f in data.get('frames', [])]
         return cls(
-            version=data.get('version', SEEKABLE_INDEX_VERSION),
+            version=data.get('version', UNIFIED_INDEX_VERSION),
             source_zst_path=data.get('source_zst_path', ''),
             source_zst_modified_at=data.get('source_zst_modified_at', ''),
             source_zst_size_bytes=data.get('source_zst_size_bytes', 0),
@@ -127,8 +128,9 @@ def get_index_dir() -> Path:
 def get_index_path(zst_path: str | Path) -> Path:
     """Get the index file path for a seekable zstd file.
 
-    Index files are stored in $RX_CACHE_DIR/indexes/ with names based on
-    hash of the absolute path plus the filename for readability.
+    Index files are stored in $RX_CACHE_DIR/indexes/ with names using
+    the unified format: {filename}_{hash}.json
+    This matches the format used by unified_index.py for consistency.
 
     Args:
         zst_path: Path to the seekable zstd file
@@ -140,7 +142,10 @@ def get_index_path(zst_path: str | Path) -> Path:
     abs_path = str(zst_path.resolve())
     path_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
     filename = zst_path.name
-    index_filename = f'{path_hash}_{filename}.idx.json'
+    # Sanitize filename to be safe for filesystem
+    safe_filename = ''.join(c if c.isalnum() or c in '._-' else '_' for c in filename)
+    # Use unified format: {filename}_{hash}.json (not legacy {hash}_{filename}.idx.json)
+    index_filename = f'{safe_filename}_{path_hash}.json'
     return get_index_dir() / index_filename
 
 
@@ -174,8 +179,8 @@ def is_index_valid(zst_path: str | Path) -> bool:
             return False
 
         # Check version
-        if index.version != SEEKABLE_INDEX_VERSION:
-            logger.debug(f'Index version mismatch: {index.version} != {SEEKABLE_INDEX_VERSION}')
+        if index.version != UNIFIED_INDEX_VERSION:
+            logger.debug(f'Index version mismatch: {index.version} != {UNIFIED_INDEX_VERSION}')
             return False
 
         # Check file metadata
@@ -344,7 +349,7 @@ def build_index(
 
     # Create index
     index = SeekableIndex(
-        version=SEEKABLE_INDEX_VERSION,
+        version=UNIFIED_INDEX_VERSION,
         source_zst_path=str(zst_path.resolve()),
         source_zst_modified_at=zst_mtime,
         source_zst_size_bytes=zst_stat.st_size,

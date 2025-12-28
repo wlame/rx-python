@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 # We store line number -> decompressed byte offset for every Nth line
 LINE_SAMPLE_INTERVAL = 1000
 
-# Index file version for compatibility checking
-INDEX_VERSION = 1
+# Import unified index version for consistency
+from rx.unified_index import UNIFIED_INDEX_VERSION
 
 
 def get_compressed_index_dir() -> Path:
@@ -51,7 +51,8 @@ def get_compressed_index_dir() -> Path:
 def get_compressed_index_path(source_path: str | Path) -> Path:
     """Get the path to a compressed file's index.
 
-    The index filename is based on a hash of the absolute source path.
+    The index filename uses the unified format: {filename}_{hash}.json
+    This matches the format used by unified_index.py for consistency.
 
     Args:
         source_path: Path to the compressed file
@@ -62,9 +63,12 @@ def get_compressed_index_path(source_path: str | Path) -> Path:
     source_path = Path(source_path).resolve()
     path_hash = hashlib.sha256(str(source_path).encode()).hexdigest()[:16]
     filename = source_path.name
+    # Sanitize filename to be safe for filesystem
+    safe_filename = ''.join(c if c.isalnum() or c in '._-' else '_' for c in filename)
 
     index_dir = get_compressed_index_dir()
-    return index_dir / f'{path_hash}_{filename}.json'
+    # Use unified format: {filename}_{hash}.json (not legacy {hash}_{filename}.json)
+    return index_dir / f'{safe_filename}_{path_hash}.json'
 
 
 def load_compressed_index(source_path: str | Path) -> dict | None:
@@ -110,7 +114,7 @@ def is_compressed_index_valid(source_path: str | Path) -> bool:
         return False
 
     # Check version
-    if index_data.get('version') != INDEX_VERSION:
+    if index_data.get('version') != UNIFIED_INDEX_VERSION:
         logger.debug(f'Index version mismatch for {source_path}')
         return False
 
@@ -228,7 +232,7 @@ def build_compressed_index(
     )
 
     index_data = {
-        'version': INDEX_VERSION,
+        'version': UNIFIED_INDEX_VERSION,
         'source_path': str(source_path),
         'source_modified_at': source_mtime,
         'source_size_bytes': source_size,

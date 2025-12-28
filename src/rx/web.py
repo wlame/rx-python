@@ -28,7 +28,11 @@ from rx.analyze.detectors.base import (
     get_detector_info_list,
     get_severity_scale,
 )
-from rx.compressed_index import get_decompressed_content_at_line, get_or_build_compressed_index
+from rx.compressed_index import (
+    get_decompressed_content_at_line,
+    get_decompressed_lines,
+    get_or_build_compressed_index,
+)
 from rx.compression import CompressionFormat, detect_compression, is_compressed
 from rx.file_utils import get_context, get_context_by_lines, is_text_file, validate_file
 from rx.frontend_manager import ensure_frontend
@@ -1232,22 +1236,18 @@ async def samples(
                     context_data[str(start)] = lines_content
                     line_mapping[str(start)] = -1  # No byte offsets for compressed
                 else:
-                    # Range - get exact lines, no context
+                    # Range - get all lines in one decompression pass
                     range_key = f'{start}-{end}'
-                    range_lines = []
-                    for line_num in range(start, end + 1):
-                        lines_content = await anyio.to_thread.run_sync(
-                            partial(
-                                get_decompressed_content_at_line,
-                                source_path=path,
-                                line_number=line_num,
-                                context_before=0,
-                                context_after=0,
-                                index_data=index_data,
-                            )
+                    line_count = end - start + 1
+                    range_lines = await anyio.to_thread.run_sync(
+                        partial(
+                            get_decompressed_lines,
+                            source_path=path,
+                            start_line=start,
+                            count=line_count,
+                            index_data=index_data,
                         )
-                        if lines_content:
-                            range_lines.extend(lines_content)
+                    )
                     context_data[range_key] = range_lines
                     line_mapping[range_key] = -1
 

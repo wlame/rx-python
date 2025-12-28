@@ -330,21 +330,25 @@ class FileIndexer:
         if comp:
             idx.compression_format = comp.value
 
-        # Try to get decompressed info from existing compressed_index
+        # Build or load compressed index (this decompresses the file to count lines)
         try:
             from rx import compressed_index
 
-            comp_idx = compressed_index.load_compressed_index(filepath)
+            comp_idx = compressed_index.get_or_build_compressed_index(filepath)
             if comp_idx:
-                idx.line_index = comp_idx.line_index
-                idx.decompressed_size_bytes = comp_idx.decompressed_size_bytes
-                idx.line_count = comp_idx.total_lines
+                idx.line_index = comp_idx.get('line_index', [])
+                idx.decompressed_size_bytes = comp_idx.get('decompressed_size_bytes')
+                idx.line_count = comp_idx.get('total_lines')
 
                 if idx.decompressed_size_bytes and idx.source_size_bytes:
                     idx.compression_ratio = idx.decompressed_size_bytes / idx.source_size_bytes
 
         except Exception as e:
-            logger.debug(f'Could not load compressed index: {e}')
+            logger.warning(f'Failed to build compressed index for {filepath}: {e}')
+
+        # Run anomaly detection if analyze mode (FileAnalyzer handles decompression)
+        if self.analyze and self.detectors:
+            self._run_anomaly_detection(filepath, idx)
 
     def _build_seekable_zstd_index(self, filepath: str, idx: UnifiedFileIndex) -> None:
         """Build index for a seekable zstd file.

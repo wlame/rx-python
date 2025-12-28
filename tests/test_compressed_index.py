@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from rx.compressed_index import (
-    INDEX_VERSION,
     build_compressed_index,
     clear_compressed_indexes,
     delete_compressed_index,
@@ -23,6 +22,7 @@ from rx.compressed_index import (
     load_compressed_index,
     save_compressed_index,
 )
+from rx.unified_index import UNIFIED_INDEX_VERSION
 
 
 @pytest.fixture
@@ -108,7 +108,7 @@ class TestIndexBuild:
         temp_path, content, lines = temp_gzip_file
         index_data = build_compressed_index(temp_path)
 
-        assert index_data['version'] == INDEX_VERSION
+        assert index_data['version'] == UNIFIED_INDEX_VERSION
         assert index_data['source_path'] == str(Path(temp_path).resolve())
         assert index_data['compression_format'] == 'gzip'
         assert index_data['decompressed_size_bytes'] == len(content)
@@ -177,7 +177,7 @@ class TestIndexValidation:
         """Test validation fails with wrong version."""
         temp_path, _, _ = temp_gzip_file
         index_data = build_compressed_index(temp_path)
-        index_data['version'] = INDEX_VERSION + 1
+        index_data['version'] = UNIFIED_INDEX_VERSION + 1
         save_compressed_index(index_data, temp_path)
 
         assert is_compressed_index_valid(temp_path) is False
