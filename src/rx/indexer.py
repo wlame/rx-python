@@ -441,6 +441,11 @@ class FileIndexer:
     def _offset_to_line(self, offset: int, line_index: list[list[int]]) -> int:
         """Convert byte offset to line number using binary search on line_index.
 
+        Note: This is an APPROXIMATION. The line_index only stores checkpoints
+        at intervals (typically 1MB), so we estimate the line number based on
+        average line length between checkpoints. This can be off by a few lines
+        when line lengths vary significantly.
+
         Args:
             offset: Byte offset in the file
             line_index: List of [line_number, byte_offset] entries
@@ -479,7 +484,10 @@ class FileIndexer:
             if bytes_in_range > 0 and lines_in_range > 0:
                 avg_line_length = bytes_in_range / lines_in_range
                 extra_bytes = offset - checkpoint_offset
-                extra_lines = int(extra_bytes / avg_line_length)
+                # Use round() instead of int() for better approximation
+                extra_lines = round(extra_bytes / avg_line_length)
+                # Clamp to not exceed the next checkpoint
+                extra_lines = min(extra_lines, lines_in_range - 1)
                 return checkpoint_line + extra_lines
 
         # Fallback: just return the checkpoint line

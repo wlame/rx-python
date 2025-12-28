@@ -631,6 +631,118 @@ class TestTimestampGapDetector:
         severity = self.detector.check_line(ctx2)
         assert severity is not None
 
+    # === Tests for new improvements ===
+
+    def test_timestamp_in_payload_not_detected(self):
+        """Timestamps in message payload (after first 5 words) should not be detected."""
+        # Reset detector state
+        self.detector = TimestampGapDetector()
+
+        # First line with timestamp at the start
+        ctx1 = make_context('2024-01-15T10:00:00 INFO: Event 1', line_number=1)
+        self.detector.check_line(ctx1)
+
+        # Second line where timestamp is in the payload (word 6+), not at start
+        # The line has 5 words before the timestamp: "INFO Event data payload message"
+        ctx2 = make_context('INFO Event data payload message 2024-01-15T11:00:00 happened here', line_number=2)
+        severity = self.detector.check_line(ctx2)
+        # Should NOT detect a gap because timestamp is not in first 5 words
+        assert severity is None
+
+    def test_timestamp_in_first_words_detected(self):
+        """Timestamps in the first 5 words should be detected."""
+        self.detector = TimestampGapDetector()
+
+        # First line
+        ctx1 = make_context('2024-01-15T10:00:00 INFO: Event 1', line_number=1)
+        self.detector.check_line(ctx1)
+
+        # Second line with timestamp in first 5 words (word 3)
+        ctx2 = make_context('INFO log 2024-01-15T10:10:00 Event 2', line_number=2)
+        severity = self.detector.check_line(ctx2)
+        # Should detect the gap (10 minutes)
+        assert severity is not None
+
+    def test_gap_ignored_when_too_many_lines_apart(self):
+        """Gaps should be ignored if timestamps are more than 500 lines apart."""
+        self.detector = TimestampGapDetector()
+
+        # First line
+        ctx1 = make_context('2024-01-15T10:00:00 INFO: Event 1', line_number=1)
+        self.detector.check_line(ctx1)
+
+        # Second line 600 lines later (> 500 default threshold)
+        ctx2 = make_context('2024-01-15T11:00:00 INFO: Event 2', line_number=601)
+        severity = self.detector.check_line(ctx2)
+        # Should NOT flag as gap because too many lines apart
+        assert severity is None
+
+    def test_gap_detected_within_line_threshold(self):
+        """Gaps should be detected if timestamps are within 500 lines."""
+        self.detector = TimestampGapDetector()
+
+        # First line
+        ctx1 = make_context('2024-01-15T10:00:00 INFO: Event 1', line_number=1)
+        self.detector.check_line(ctx1)
+
+        # Second line 100 lines later (< 500 threshold)
+        ctx2 = make_context('2024-01-15T10:10:00 INFO: Event 2', line_number=101)
+        severity = self.detector.check_line(ctx2)
+        # Should detect the gap (10 minutes)
+        assert severity is not None
+
+    def test_format_lock_after_threshold(self):
+        """After 50 consistent timestamps, detector should lock to that format."""
+        self.detector = TimestampGapDetector()
+
+        # Send 50 ISO format timestamps to trigger format lock
+        for i in range(50):
+            ctx = make_context(f'2024-01-15T10:{i:02d}:00 INFO: Event {i}', line_number=i + 1)
+            self.detector.check_line(ctx)
+
+        # Verify format is locked to ISO (index 0)
+        assert self.detector._locked_format == 0
+
+    def test_locked_format_ignores_other_formats(self):
+        """After format lock, other timestamp formats should not be parsed."""
+        self.detector = TimestampGapDetector()
+
+        # Send 50 ISO format timestamps to trigger format lock
+        for i in range(50):
+            ctx = make_context(f'2024-01-15T10:{i:02d}:00 INFO: Event {i}', line_number=i + 1)
+            self.detector.check_line(ctx)
+
+        # Now send a Unix timestamp - should not be detected
+        ctx_unix = make_context('1705316400 INFO: Unix event', line_number=51)
+        result = self.detector._parse_timestamp(ctx_unix.line)
+        # Should return None because we're locked to ISO format
+        assert result == (None, None)
+
+        # But an ISO timestamp should still be detected
+        ctx_iso = make_context('2024-01-15T11:00:00 INFO: ISO event', line_number=52)
+        result = self.detector._parse_timestamp(ctx_iso.line)
+        assert result[0] is not None  # Timestamp parsed
+        assert result[1] == 0  # ISO format (index 0)
+
+    def test_get_line_prefix(self):
+        """Test that _get_line_prefix extracts first N words correctly."""
+        self.detector = TimestampGapDetector()
+
+        # Test with default 5 words
+        line = 'word1 word2 word3 word4 word5 word6 word7'
+        prefix = self.detector._get_line_prefix(line)
+        assert prefix == 'word1 word2 word3 word4 word5'
+
+        # Test with fewer words
+        line = 'word1 word2 word3'
+        prefix = self.detector._get_line_prefix(line)
+        assert prefix == 'word1 word2 word3'
+
+        # Test with tabs
+        line = 'word1\tword2\tword3\tword4\tword5\tword6'
+        prefix = self.detector._get_line_prefix(line)
+        assert prefix == 'word1 word2 word3 word4 word5'
+
 
 class TestHighEntropyDetector:
     """Tests for HighEntropyDetector."""
@@ -805,6 +917,28 @@ class TestJsonDumpDetector:
         desc = self.detector.get_description(lines)
         assert 'JSON' in desc
         assert 'chars' in desc
+
+    def test_bracket_with_name_not_flagged(self):
+        """Test that lines like 'Name: [ Juliet Keat ]' are NOT flagged as JSON."""
+        # This was a false positive - square brackets containing a name
+        line = 'Email: carlief123@aol.com - Name: [ Juliet Keat ] - Phone: 555-1234' + 'x' * 50
+        ctx = make_context(line)
+        severity = self.detector.check_line(ctx)
+        assert severity is None
+
+    def test_empty_brackets_not_flagged(self):
+        """Test that empty brackets [] or {} are NOT flagged as JSON."""
+        line = 'Result: [] - Status: {} - Done' + 'x' * 100
+        ctx = make_context(line)
+        severity = self.detector.check_line(ctx)
+        assert severity is None
+
+    def test_bracket_with_words_not_flagged(self):
+        """Test that brackets containing words (not JSON) are NOT flagged."""
+        line = 'Tags: [important, urgent, review] - Category: [misc]' + 'x' * 60
+        ctx = make_context(line)
+        severity = self.detector.check_line(ctx)
+        assert severity is None
 
 
 class TestFormatDeviationDetector:
