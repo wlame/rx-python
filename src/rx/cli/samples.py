@@ -5,7 +5,7 @@ import sys
 
 import click
 
-from rx.compressed_index import get_decompressed_content_at_line, get_or_build_compressed_index
+from rx.compressed_index import get_decompressed_content_at_line
 from rx.compression import CompressionFormat, detect_compression, is_compressed
 from rx.file_utils import get_context, get_context_by_lines, is_text_file
 from rx.models import SamplesResponse, UnifiedFileIndex
@@ -470,7 +470,13 @@ def samples_command(
             else:
                 # Use generic compressed index for other formats
                 click.echo(f'Processing compressed file ({compression_format.value})...', err=True)
-                index_data = get_or_build_compressed_index(path)
+                # Load from unified cache or build
+                from rx.indexer import FileIndexer
+
+                index_data = load_index(path)
+                if index_data is None:
+                    indexer = FileIndexer(analyze=False)
+                    index_data = indexer.index_file(path)
 
                 # Get samples for each line/range
                 context_data = {}
@@ -483,7 +489,7 @@ def samples_command(
                             start,
                             context_before=before_context,
                             context_after=after_context,
-                            index_data=index_data,
+                            index=index_data,
                         )
                         context_data[start] = lines
                         line_to_offset[str(start)] = -1
@@ -497,7 +503,7 @@ def samples_command(
                                 line_num,
                                 context_before=0,
                                 context_after=0,
-                                index_data=index_data,
+                                index=index_data,
                             )
                             if lines:
                                 range_lines.extend(lines)

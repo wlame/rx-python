@@ -14,7 +14,6 @@ Index Structure:
 """
 
 import hashlib
-import json
 import logging
 import time
 from collections.abc import Callable
@@ -35,8 +34,15 @@ logger = logging.getLogger(__name__)
 # We store line number -> decompressed byte offset for every Nth line
 LINE_SAMPLE_INTERVAL = 1000
 
-# Import unified index version for consistency
+# Import unified index version and model for consistency
+# Type hint import (avoid circular import at runtime)
+from typing import TYPE_CHECKING
+
 from rx.unified_index import UNIFIED_INDEX_VERSION
+
+
+if TYPE_CHECKING:
+    from rx.models import UnifiedFileIndex
 
 
 def get_compressed_index_dir() -> Path:
@@ -71,73 +77,6 @@ def get_compressed_index_path(source_path: str | Path) -> Path:
     return index_dir / f'{safe_filename}_{path_hash}.json'
 
 
-def load_compressed_index(source_path: str | Path) -> dict | None:
-    """Load an existing compressed file index.
-
-    Args:
-        source_path: Path to the compressed file
-
-    Returns:
-        Index data dict, or None if not found or invalid
-    """
-    index_path = get_compressed_index_path(source_path)
-
-    if not index_path.exists():
-        return None
-
-    try:
-        with open(index_path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logger.warning(f'Failed to load compressed index {index_path}: {e}')
-        return None
-
-
-def is_compressed_index_valid(source_path: str | Path) -> bool:
-    """Check if an index exists and is current for the source file.
-
-    An index is valid if:
-    1. It exists
-    2. Version matches current INDEX_VERSION
-    3. Source file mtime and size match
-
-    Args:
-        source_path: Path to the compressed file
-
-    Returns:
-        True if index is valid and current
-    """
-    source_path = Path(source_path)
-
-    index_data = load_compressed_index(source_path)
-    if index_data is None:
-        return False
-
-    # Check version
-    if index_data.get('version') != UNIFIED_INDEX_VERSION:
-        logger.debug(f'Index version mismatch for {source_path}')
-        return False
-
-    # Check source file still exists and matches
-    try:
-        stat = source_path.stat()
-        source_mtime = datetime.fromtimestamp(stat.st_mtime).isoformat()
-        source_size = stat.st_size
-
-        if index_data.get('source_size_bytes') != source_size:
-            logger.debug(f'Source file size changed for {source_path}')
-            return False
-
-        if index_data.get('source_modified_at') != source_mtime:
-            logger.debug(f'Source file mtime changed for {source_path}')
-            return False
-
-    except OSError:
-        return False
-
-    return True
-
-
 def build_compressed_index(
     source_path: str | Path,
     progress_callback: Callable | None = None,
@@ -147,6 +86,7 @@ def build_compressed_index(
     This decompresses the entire file while tracking:
     - Total decompressed size
     - Line number to decompressed byte offset mapping (sampled)
+    - Line statistics (count, empty, lengths, etc.)
 
     Args:
         source_path: Path to the compressed file
@@ -159,6 +99,8 @@ def build_compressed_index(
         ValueError: If file is not compressed
         RuntimeError: If decompression fails
     """
+    import statistics
+
     source_path = Path(source_path).resolve()
 
     compression_format = detect_compression(source_path)
@@ -178,11 +120,21 @@ def build_compressed_index(
 
     # Read and count lines, building sparse line index
     line_index = []  # List of [line_number, decompressed_offset]
-    current_line = 1
+    current_line = 0  # Will be incremented to 1 when first line is complete
     current_offset = 0
+    line_start_offset = 0  # Track where current line started
 
-    # Add first line
-    line_index.append([1, 0])
+    # Statistics tracking
+    line_lengths: list[int] = []
+    empty_line_count = 0
+    max_line_length = 0
+    max_line_number = 0
+    max_line_offset = 0
+    line_ending = None  # Will detect LF vs CRLF
+    prev_byte = None
+
+    # Buffer for partial lines across chunks
+    partial_line_length = 0
 
     try:
         while True:
@@ -190,22 +142,55 @@ def build_compressed_index(
             if not chunk:
                 break
 
-            # Count newlines in chunk and track positions
+            # Process each byte position in chunk
             chunk_offset = 0
-            while True:
+            while chunk_offset < len(chunk):
                 newline_pos = chunk.find(b'\n', chunk_offset)
                 if newline_pos == -1:
+                    # No more newlines in this chunk
+                    partial_line_length += len(chunk) - chunk_offset
                     break
 
+                # Found a newline - complete this line
                 current_line += 1
-                line_start_offset = current_offset + newline_pos + 1
+                line_length = partial_line_length + (newline_pos - chunk_offset)
+
+                # Check for CRLF
+                if newline_pos > 0 and chunk[newline_pos - 1 : newline_pos] == b'\r':
+                    line_length -= 1  # Don't count \r in line length
+                    if line_ending is None:
+                        line_ending = 'CRLF'
+                elif prev_byte == b'\r' and newline_pos == 0:
+                    line_length -= 1
+                    if line_ending is None:
+                        line_ending = 'CRLF'
+                elif line_ending is None:
+                    line_ending = 'LF'
+
+                # Track statistics
+                line_lengths.append(line_length)
+                if line_length == 0:
+                    empty_line_count += 1
+                if line_length > max_line_length:
+                    max_line_length = line_length
+                    max_line_number = current_line
+                    max_line_offset = line_start_offset
+
+                # Add first line checkpoint
+                if current_line == 1:
+                    line_index.append([1, 0])
 
                 # Sample every Nth line
-                if current_line % LINE_SAMPLE_INTERVAL == 0:
-                    line_index.append([current_line, line_start_offset])
+                elif current_line % LINE_SAMPLE_INTERVAL == 0:
+                    line_index.append([current_line, current_offset + newline_pos + 1])
 
+                # Move to next line
+                line_start_offset = current_offset + newline_pos + 1
+                partial_line_length = 0
                 chunk_offset = newline_pos + 1
 
+            # Track last byte for CRLF detection across chunks
+            prev_byte = chunk[-1:] if chunk else None
             current_offset += len(chunk)
 
             if progress_callback:
@@ -217,6 +202,17 @@ def build_compressed_index(
             stderr = proc.stderr.read().decode() if proc.stderr else ''
             raise RuntimeError(f'Decompression failed: {stderr}')
 
+        # Handle final line without newline
+        if partial_line_length > 0:
+            current_line += 1
+            line_lengths.append(partial_line_length)
+            if partial_line_length == 0:
+                empty_line_count += 1
+            if partial_line_length > max_line_length:
+                max_line_length = partial_line_length
+                max_line_number = current_line
+                max_line_offset = line_start_offset
+
     except Exception as e:
         proc.kill()
         raise RuntimeError(f'Failed to build index: {e}')
@@ -224,6 +220,23 @@ def build_compressed_index(
     elapsed = time.time() - start_time
     total_lines = current_line
     decompressed_size = current_offset
+
+    # Compute statistics
+    if line_lengths:
+        line_length_avg = statistics.mean(line_lengths)
+        line_length_median = statistics.median(line_lengths)
+        line_length_stddev = statistics.stdev(line_lengths) if len(line_lengths) > 1 else 0.0
+        sorted_lengths = sorted(line_lengths)
+        p95_idx = int(len(sorted_lengths) * 0.95)
+        p99_idx = int(len(sorted_lengths) * 0.99)
+        line_length_p95 = sorted_lengths[min(p95_idx, len(sorted_lengths) - 1)]
+        line_length_p99 = sorted_lengths[min(p99_idx, len(sorted_lengths) - 1)]
+    else:
+        line_length_avg = 0.0
+        line_length_median = 0.0
+        line_length_stddev = 0.0
+        line_length_p95 = 0
+        line_length_p99 = 0
 
     logger.info(
         f'Built index for {source_path}: {total_lines} lines, '
@@ -243,67 +256,34 @@ def build_compressed_index(
         'line_index': line_index,
         'created_at': datetime.now().isoformat(),
         'build_time_seconds': elapsed,
+        # Statistics
+        'empty_line_count': empty_line_count,
+        'line_ending': line_ending or 'LF',
+        'line_length_max': max_line_length,
+        'line_length_avg': round(line_length_avg, 1),
+        'line_length_median': round(line_length_median, 1),
+        'line_length_p95': line_length_p95,
+        'line_length_p99': line_length_p99,
+        'line_length_stddev': round(line_length_stddev, 1),
+        'line_length_max_line_number': max_line_number,
+        'line_length_max_byte_offset': max_line_offset,
     }
 
     return index_data
 
 
-def save_compressed_index(index_data: dict, source_path: str | Path) -> Path:
-    """Save a compressed file index to disk.
-
-    Args:
-        index_data: Index data dictionary
-        source_path: Path to the compressed file (used to derive index path)
-
-    Returns:
-        Path where index was saved
-    """
-    index_path = get_compressed_index_path(source_path)
-
-    # Ensure directory exists
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(index_path, 'w') as f:
-        json.dump(index_data, f, indent=2)
-
-    logger.debug(f'Saved compressed index to {index_path}')
-    return index_path
-
-
-def get_or_build_compressed_index(
-    source_path: str | Path,
-    progress_callback: Callable | None = None,
-) -> dict:
-    """Get an existing valid index or build a new one.
-
-    Args:
-        source_path: Path to the compressed file
-        progress_callback: Optional callback for build progress
-
-    Returns:
-        Index data dictionary
-    """
-    if is_compressed_index_valid(source_path):
-        logger.debug(f'Using cached compressed index for {source_path}')
-        return load_compressed_index(source_path)
-
-    # Build new index
-    index_data = build_compressed_index(source_path, progress_callback)
-    save_compressed_index(index_data, source_path)
-    return index_data
-
-
-def find_nearest_checkpoint(index_data: dict, target_line: int) -> tuple[int, int]:
+def find_nearest_checkpoint(line_index: list[list[int]], target_line: int) -> tuple[int, int]:
     """Find the nearest checkpoint at or before the target line.
 
     Args:
-        index_data: Index data dictionary
+        line_index: List of [line_number, byte_offset] checkpoints
         target_line: Target line number (1-indexed)
 
     Returns:
         Tuple of (checkpoint_line, checkpoint_offset)
     """
-    line_index = index_data.get('line_index', [[1, 0]])
+    if not line_index:
+        line_index = [[1, 0]]
 
     # Binary search for nearest checkpoint <= target_line
     left, right = 0, len(line_index) - 1
@@ -326,7 +306,7 @@ def get_decompressed_lines(
     source_path: str | Path,
     start_line: int,
     count: int = 1,
-    index_data: dict | None = None,
+    index: 'UnifiedFileIndex | None' = None,
 ) -> list[str]:
     """Get specific lines from a compressed file.
 
@@ -337,19 +317,33 @@ def get_decompressed_lines(
         source_path: Path to the compressed file
         start_line: Starting line number (1-indexed)
         count: Number of lines to retrieve
-        index_data: Optional pre-loaded index (will load/build if not provided)
+        index: Optional pre-loaded UnifiedFileIndex.
+               If not provided, will load from cache or build new.
 
     Returns:
         List of line strings (without newlines)
     """
+
     source_path = Path(source_path)
 
-    # Get or build index
-    if index_data is None:
-        index_data = get_or_build_compressed_index(source_path)
+    # Get index from cache or build
+    if index is None:
+        from rx.unified_index import load_index
+
+        index = load_index(str(source_path))
+        if index is None:
+            # No cached index, build on the fly and wrap in UnifiedFileIndex
+            from rx.indexer import FileIndexer
+
+            # Use analyze=True to ensure index is always built (even for small files)
+            indexer = FileIndexer(analyze=True)
+            index = indexer.index_file(str(source_path))
+            if index is None:
+                raise RuntimeError(f'Failed to build index for {source_path}')
 
     # Find nearest checkpoint
-    checkpoint_line, checkpoint_offset = find_nearest_checkpoint(index_data, start_line)
+    line_index = index.line_index or [[1, 0]]
+    checkpoint_line, checkpoint_offset = find_nearest_checkpoint(line_index, start_line)
 
     logger.debug(
         f'Getting lines {start_line}-{start_line + count - 1} from {source_path}, '
@@ -357,8 +351,8 @@ def get_decompressed_lines(
     )
 
     # Decompress from beginning (we can't seek in compressed stream without special tools)
-    # For Tier 1, we decompress from start and skip to checkpoint
-    compression_format = CompressionFormat.from_string(index_data.get('compression_format', 'gzip'))
+    comp_format_str = index.compression_format or 'gzip'
+    compression_format = CompressionFormat.from_string(comp_format_str)
     proc = decompress_to_stdout(source_path, compression_format)
 
     try:
@@ -415,7 +409,7 @@ def get_decompressed_content_at_line(
     line_number: int,
     context_before: int = 0,
     context_after: int = 0,
-    index_data: dict | None = None,
+    index: 'UnifiedFileIndex | None' = None,
 ) -> list[str]:
     """Get content around a specific line in a compressed file.
 
@@ -424,7 +418,7 @@ def get_decompressed_content_at_line(
         line_number: Target line number (1-indexed)
         context_before: Number of lines before target
         context_after: Number of lines after target
-        index_data: Optional pre-loaded index
+        index: Optional pre-loaded UnifiedFileIndex
 
     Returns:
         List of lines (context_before + 1 + context_after lines)
@@ -436,72 +430,4 @@ def get_decompressed_content_at_line(
     if line_number - context_before < 1:
         total_lines = line_number + context_after
 
-    return get_decompressed_lines(source_path, start_line, total_lines, index_data)
-
-
-def delete_compressed_index(source_path: str | Path) -> bool:
-    """Delete the index for a compressed file.
-
-    Args:
-        source_path: Path to the compressed file
-
-    Returns:
-        True if index was deleted, False if it didn't exist
-    """
-    index_path = get_compressed_index_path(source_path)
-
-    if index_path.exists():
-        index_path.unlink()
-        logger.debug(f'Deleted compressed index {index_path}')
-        return True
-
-    return False
-
-
-def list_compressed_indexes() -> list[dict]:
-    """List all compressed file indexes.
-
-    Returns:
-        List of index metadata dictionaries
-    """
-    index_dir = get_compressed_index_dir()
-    indexes = []
-
-    for index_file in index_dir.glob('*.json'):
-        try:
-            with open(index_file) as f:
-                data = json.load(f)
-                indexes.append(
-                    {
-                        'index_path': str(index_file),
-                        'source_path': data.get('source_path'),
-                        'compression_format': data.get('compression_format'),
-                        'decompressed_size_bytes': data.get('decompressed_size_bytes'),
-                        'total_lines': data.get('total_lines'),
-                        'created_at': data.get('created_at'),
-                    }
-                )
-        except (OSError, json.JSONDecodeError):
-            continue
-
-    return indexes
-
-
-def clear_compressed_indexes() -> int:
-    """Delete all compressed file indexes.
-
-    Returns:
-        Number of indexes deleted
-    """
-    index_dir = get_compressed_index_dir()
-    count = 0
-
-    for index_file in index_dir.glob('*.json'):
-        try:
-            index_file.unlink()
-            count += 1
-        except OSError:
-            pass
-
-    logger.info(f'Cleared {count} compressed indexes')
-    return count
+    return get_decompressed_lines(source_path, start_line, total_lines, index)

@@ -814,7 +814,7 @@ class TestSamplesEndpointCompressedRanges:
         """
         response = client.get('/v1/samples', params={'path': zstd_test_file, 'lines': '1-10'})
 
-        assert response.status_code == 200
+        assert response.status_code == 200, f'Got {response.status_code}: {response.text}'
         data = response.json()
 
         # Critical assertion: should have '1-10' as a key, not be empty

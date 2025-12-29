@@ -191,9 +191,36 @@ class TestFindFrameForLine:
     def sample_index(self):
         """Create sample index with known frame structure."""
         frames = [
-            FrameLineInfo(0, 0, 100, 0, 1000, 1, 50, 50),
-            FrameLineInfo(1, 100, 100, 1000, 1000, 51, 100, 50),
-            FrameLineInfo(2, 200, 100, 2000, 1000, 101, 150, 50),
+            FrameLineInfo(
+                index=0,
+                compressed_offset=0,
+                compressed_size=100,
+                decompressed_offset=0,
+                decompressed_size=1000,
+                first_line=1,
+                last_line=50,
+                line_count=50,
+            ),
+            FrameLineInfo(
+                index=1,
+                compressed_offset=100,
+                compressed_size=100,
+                decompressed_offset=1000,
+                decompressed_size=1000,
+                first_line=51,
+                last_line=100,
+                line_count=50,
+            ),
+            FrameLineInfo(
+                index=2,
+                compressed_offset=200,
+                compressed_size=100,
+                decompressed_offset=2000,
+                decompressed_size=1000,
+                first_line=101,
+                last_line=150,
+                line_count=50,
+            ),
         ]
         return SeekableIndex(
             version=1,
@@ -240,8 +267,26 @@ class TestFindFramesForLines:
     def sample_index(self):
         """Create sample index."""
         frames = [
-            FrameLineInfo(0, 0, 100, 0, 1000, 1, 50, 50),
-            FrameLineInfo(1, 100, 100, 1000, 1000, 51, 100, 50),
+            FrameLineInfo(
+                index=0,
+                compressed_offset=0,
+                compressed_size=100,
+                decompressed_offset=0,
+                decompressed_size=1000,
+                first_line=1,
+                last_line=50,
+                line_count=50,
+            ),
+            FrameLineInfo(
+                index=1,
+                compressed_offset=100,
+                compressed_size=100,
+                decompressed_offset=1000,
+                decompressed_size=1000,
+                first_line=51,
+                last_line=100,
+                line_count=50,
+            ),
         ]
         return SeekableIndex(
             version=1,
@@ -318,7 +363,16 @@ class TestIndexPersistence:
     def test_save_and_load_index(self, tmp_path):
         """Test saving and loading index."""
         frames = [
-            FrameLineInfo(0, 0, 100, 0, 1000, 1, 50, 50),
+            FrameLineInfo(
+                index=0,
+                compressed_offset=0,
+                compressed_size=100,
+                decompressed_offset=0,
+                decompressed_size=1000,
+                first_line=1,
+                last_line=50,
+                line_count=50,
+            ),
         ]
         original = SeekableIndex(
             version=1,

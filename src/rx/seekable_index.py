@@ -15,10 +15,11 @@ import json
 import logging
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from rx.models import FrameLineInfo  # Use Pydantic model from models.py
 from rx.seekable_zstd import (
     DEFAULT_FRAME_SIZE_BYTES,
     FrameInfo,
@@ -40,32 +41,18 @@ from rx.unified_index import UNIFIED_INDEX_VERSION
 LINE_INDEX_INTERVAL = 10000
 
 
-@dataclass
-class FrameLineInfo:
-    """Frame information with line mapping."""
-
-    index: int
-    compressed_offset: int
-    compressed_size: int
-    decompressed_offset: int
-    decompressed_size: int
-    first_line: int
-    last_line: int
-    line_count: int
-
-    @classmethod
-    def from_frame_info(cls, frame: FrameInfo, first_line: int, last_line: int) -> 'FrameLineInfo':
-        """Create FrameLineInfo from FrameInfo with line data."""
-        return cls(
-            index=frame.index,
-            compressed_offset=frame.compressed_offset,
-            compressed_size=frame.compressed_size,
-            decompressed_offset=frame.decompressed_offset,
-            decompressed_size=frame.decompressed_size,
-            first_line=first_line,
-            last_line=last_line,
-            line_count=last_line - first_line + 1,
-        )
+def frame_line_info_from_frame(frame: FrameInfo, first_line: int, last_line: int) -> FrameLineInfo:
+    """Create FrameLineInfo from FrameInfo with line data."""
+    return FrameLineInfo(
+        index=frame.index,
+        compressed_offset=frame.compressed_offset,
+        compressed_size=frame.compressed_size,
+        decompressed_offset=frame.decompressed_offset,
+        decompressed_size=frame.decompressed_size,
+        first_line=first_line,
+        last_line=last_line,
+        line_count=last_line - first_line + 1,
+    )
 
 
 @dataclass
@@ -86,19 +73,32 @@ class SeekableIndex:
     created_at: str = ''
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
+        """Convert to dictionary for JSON serialization.
+
+        Returns a format compatible with UnifiedFileIndex for unified caching.
+        """
         return {
             'version': self.version,
+            # UnifiedFileIndex-compatible fields
+            'source_path': self.source_zst_path,
+            'source_modified_at': self.source_zst_modified_at,
+            'source_size_bytes': self.source_zst_size_bytes,
+            'file_type': 'seekable_zstd',
+            'compression_format': 'zstd',
+            'is_text': True,
+            # Seekable zstd specific
+            'decompressed_size_bytes': self.decompressed_size_bytes,
+            'line_count': self.total_lines,
+            'frame_count': self.frame_count,
+            'frame_size_target': self.frame_size_target,
+            'frames': [f.model_dump() for f in self.frames],
+            'line_index': self.line_index,
+            'created_at': self.created_at,
+            # Legacy fields for backward compat with SeekableIndex.from_dict()
             'source_zst_path': self.source_zst_path,
             'source_zst_modified_at': self.source_zst_modified_at,
             'source_zst_size_bytes': self.source_zst_size_bytes,
-            'decompressed_size_bytes': self.decompressed_size_bytes,
             'total_lines': self.total_lines,
-            'frame_count': self.frame_count,
-            'frame_size_target': self.frame_size_target,
-            'frames': [asdict(f) for f in self.frames],
-            'line_index': self.line_index,
-            'created_at': self.created_at,
         }
 
     @classmethod
@@ -321,7 +321,7 @@ def build_index(
         first_line = current_line
         last_line = current_line + lines_in_frame - 1 if lines_in_frame > 0 else current_line
 
-        frame_line_infos.append(FrameLineInfo.from_frame_info(frame, first_line, last_line))
+        frame_line_infos.append(frame_line_info_from_frame(frame, first_line, last_line))
 
         # Add sampled line index entries for this frame
         # Store entry for first line of frame

@@ -9,18 +9,11 @@ import pytest
 
 from rx.compressed_index import (
     build_compressed_index,
-    clear_compressed_indexes,
-    delete_compressed_index,
     find_nearest_checkpoint,
     get_compressed_index_dir,
     get_compressed_index_path,
     get_decompressed_content_at_line,
     get_decompressed_lines,
-    get_or_build_compressed_index,
-    is_compressed_index_valid,
-    list_compressed_indexes,
-    load_compressed_index,
-    save_compressed_index,
 )
 from rx.unified_index import UNIFIED_INDEX_VERSION
 
@@ -66,14 +59,6 @@ def temp_index_dir(tmp_path, monkeypatch):
     """Create a temporary index directory using RX_CACHE_DIR env var."""
     monkeypatch.setenv('RX_CACHE_DIR', str(tmp_path))
     yield tmp_path / 'rx' / 'indexes'
-
-
-@pytest.fixture
-def cleanup_indexes(temp_gzip_file):
-    """Cleanup any created indexes after test."""
-    temp_path, _, _ = temp_gzip_file
-    yield temp_path
-    delete_compressed_index(temp_path)
 
 
 class TestIndexPaths:
@@ -136,112 +121,34 @@ class TestIndexBuild:
             os.unlink(temp_path)
 
 
-class TestIndexSaveLoad:
-    """Tests for saving and loading indexes."""
-
-    def test_save_and_load_index(self, temp_gzip_file, temp_index_dir):
-        """Test saving and loading an index."""
-        temp_path, _, _ = temp_gzip_file
-        index_data = build_compressed_index(temp_path)
-        save_compressed_index(index_data, temp_path)
-
-        loaded = load_compressed_index(temp_path)
-        assert loaded is not None
-        assert loaded['version'] == index_data['version']
-        assert loaded['source_path'] == index_data['source_path']
-
-    def test_load_nonexistent_index(self, temp_gzip_file, temp_index_dir):
-        """Test loading non-existent index returns None."""
-        temp_path, _, _ = temp_gzip_file
-        loaded = load_compressed_index(temp_path)
-        assert loaded is None
-
-
-class TestIndexValidation:
-    """Tests for index validation."""
-
-    def test_is_valid_with_fresh_index(self, temp_gzip_file, temp_index_dir):
-        """Test validation passes for fresh index."""
-        temp_path, _, _ = temp_gzip_file
-        index_data = build_compressed_index(temp_path)
-        save_compressed_index(index_data, temp_path)
-
-        assert is_compressed_index_valid(temp_path) is True
-
-    def test_is_invalid_with_no_index(self, temp_gzip_file, temp_index_dir):
-        """Test validation fails when no index exists."""
-        temp_path, _, _ = temp_gzip_file
-        assert is_compressed_index_valid(temp_path) is False
-
-    def test_is_invalid_with_wrong_version(self, temp_gzip_file, temp_index_dir):
-        """Test validation fails with wrong version."""
-        temp_path, _, _ = temp_gzip_file
-        index_data = build_compressed_index(temp_path)
-        index_data['version'] = UNIFIED_INDEX_VERSION + 1
-        save_compressed_index(index_data, temp_path)
-
-        assert is_compressed_index_valid(temp_path) is False
-
-    def test_is_invalid_with_changed_size(self, temp_gzip_file, temp_index_dir):
-        """Test validation fails when source file size changes."""
-        temp_path, _, _ = temp_gzip_file
-        index_data = build_compressed_index(temp_path)
-        index_data['source_size_bytes'] += 1000
-        save_compressed_index(index_data, temp_path)
-
-        assert is_compressed_index_valid(temp_path) is False
-
-
-class TestGetOrBuildIndex:
-    """Tests for get_or_build_compressed_index."""
-
-    def test_builds_new_index(self, temp_gzip_file, temp_index_dir):
-        """Test building new index when none exists."""
-        temp_path, _, _ = temp_gzip_file
-        index_data = get_or_build_compressed_index(temp_path)
-        assert index_data is not None
-        assert 'version' in index_data
-
-    def test_uses_cached_index(self, temp_gzip_file, temp_index_dir):
-        """Test using cached index when valid."""
-        temp_path, _, _ = temp_gzip_file
-        # Build and save
-        index_data1 = get_or_build_compressed_index(temp_path)
-
-        # Should use cached version
-        index_data2 = get_or_build_compressed_index(temp_path)
-
-        assert index_data1['created_at'] == index_data2['created_at']
-
-
 class TestFindNearestCheckpoint:
     """Tests for checkpoint lookup."""
 
     def test_find_checkpoint_at_start(self):
         """Test finding checkpoint at start of file."""
-        index_data = {'line_index': [[1, 0], [1000, 50000], [2000, 100000]]}
-        line, offset = find_nearest_checkpoint(index_data, 1)
+        line_index = [[1, 0], [1000, 50000], [2000, 100000]]
+        line, offset = find_nearest_checkpoint(line_index, 1)
         assert line == 1
         assert offset == 0
 
     def test_find_checkpoint_in_middle(self):
         """Test finding checkpoint in middle of file."""
-        index_data = {'line_index': [[1, 0], [1000, 50000], [2000, 100000]]}
-        line, offset = find_nearest_checkpoint(index_data, 1500)
+        line_index = [[1, 0], [1000, 50000], [2000, 100000]]
+        line, offset = find_nearest_checkpoint(line_index, 1500)
         assert line == 1000
         assert offset == 50000
 
     def test_find_checkpoint_at_exact_boundary(self):
         """Test finding checkpoint at exact checkpoint line."""
-        index_data = {'line_index': [[1, 0], [1000, 50000], [2000, 100000]]}
-        line, offset = find_nearest_checkpoint(index_data, 2000)
+        line_index = [[1, 0], [1000, 50000], [2000, 100000]]
+        line, offset = find_nearest_checkpoint(line_index, 2000)
         assert line == 2000
         assert offset == 100000
 
     def test_find_checkpoint_past_end(self):
         """Test finding checkpoint past last checkpoint."""
-        index_data = {'line_index': [[1, 0], [1000, 50000], [2000, 100000]]}
-        line, offset = find_nearest_checkpoint(index_data, 5000)
+        line_index = [[1, 0], [1000, 50000], [2000, 100000]]
+        line, offset = find_nearest_checkpoint(line_index, 5000)
         assert line == 2000
         assert offset == 100000
 
@@ -296,46 +203,3 @@ class TestGetDecompressedContentAtLine:
         result = get_decompressed_content_at_line(temp_path, 50, context_before=0, context_after=0)
         assert len(result) == 1
         assert result[0] == lines[49].rstrip('\n')
-
-
-class TestIndexManagement:
-    """Tests for index management functions."""
-
-    def test_delete_index(self, temp_gzip_file, temp_index_dir):
-        """Test deleting an index."""
-        temp_path, _, _ = temp_gzip_file
-        index_data = build_compressed_index(temp_path)
-        save_compressed_index(index_data, temp_path)
-
-        assert is_compressed_index_valid(temp_path) is True
-        deleted = delete_compressed_index(temp_path)
-        assert deleted is True
-        assert is_compressed_index_valid(temp_path) is False
-
-    def test_delete_nonexistent_index(self, temp_gzip_file, temp_index_dir):
-        """Test deleting non-existent index returns False."""
-        temp_path, _, _ = temp_gzip_file
-        deleted = delete_compressed_index(temp_path)
-        assert deleted is False
-
-    def test_list_indexes(self, temp_gzip_file, temp_index_dir):
-        """Test listing all indexes."""
-        temp_path, _, _ = temp_gzip_file
-        # Create an index
-        index_data = get_or_build_compressed_index(temp_path)
-
-        indexes = list_compressed_indexes()
-        assert len(indexes) >= 1
-        assert any(idx['source_path'] == index_data['source_path'] for idx in indexes)
-
-    def test_clear_indexes(self, temp_gzip_file, temp_index_dir):
-        """Test clearing all indexes."""
-        temp_path, _, _ = temp_gzip_file
-        # Create an index
-        get_or_build_compressed_index(temp_path)
-
-        count = clear_compressed_indexes()
-        assert count >= 1
-
-        indexes = list_compressed_indexes()
-        assert len(indexes) == 0

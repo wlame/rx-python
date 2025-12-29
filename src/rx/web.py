@@ -31,7 +31,6 @@ from rx.analyze.detectors.base import (
 from rx.compressed_index import (
     get_decompressed_content_at_line,
     get_decompressed_lines,
-    get_or_build_compressed_index,
 )
 from rx.compression import CompressionFormat, detect_compression, is_compressed
 from rx.file_utils import get_context, get_context_by_lines, is_text_file, validate_file
@@ -72,7 +71,8 @@ from rx.path_security import (
 from rx.regex import calculate_regex_complexity
 from rx.request_store import store_request, update_request
 from rx.seekable_index import build_index as build_seekable_index
-from rx.seekable_zstd import create_seekable_zstd
+from rx.seekable_index import get_or_build_index as get_or_build_seekable_index
+from rx.seekable_zstd import create_seekable_zstd, decompress_frame, is_seekable_zstd, read_seek_table
 from rx.task_manager import TaskManager, TaskStatus
 from rx.trace import HookCallbacks, parse_paths
 from rx.unified_index import (
@@ -1214,11 +1214,97 @@ async def samples(
 
         # Handle compressed files separately
         if file_is_compressed:
-            # Build/load compressed index and get samples
-            index_data = await anyio.to_thread.run_sync(get_or_build_compressed_index, path)
+            # Check if this is a seekable zstd file (needs special handling)
+            is_seekable = await anyio.to_thread.run_sync(is_seekable_zstd, path)
 
-            context_data: dict[str, list[str]] = {}
-            line_mapping: dict[str, int] = {}
+            if is_seekable:
+                # Seekable zstd: use frame-based decompression
+                index = await anyio.to_thread.run_sync(get_or_build_seekable_index, path)
+                frames = await anyio.to_thread.run_sync(read_seek_table, path)
+
+                context_data: dict[str, list[str]] = {}
+                line_mapping: dict[str, int] = {}
+
+                for start, end in parsed_values:
+                    if end is None:
+                        # Single line with context
+                        line_num = start
+                        start_line = max(1, line_num - before)
+                        end_line = line_num + after
+
+                        # Collect lines from relevant frames
+                        lines_content = []
+                        for frame_info in index.frames:
+                            if frame_info.last_line < start_line:
+                                continue
+                            if frame_info.first_line > end_line:
+                                break
+
+                            frame_data = await anyio.to_thread.run_sync(
+                                partial(decompress_frame, path, frame_info.index, frames)
+                            )
+                            frame_lines = frame_data.decode('utf-8', errors='replace').split('\n')
+
+                            for i, line in enumerate(frame_lines):
+                                current_line = frame_info.first_line + i
+                                if start_line <= current_line <= end_line:
+                                    lines_content.append(line)
+
+                        context_data[str(line_num)] = lines_content
+                        line_mapping[str(line_num)] = -1
+                    else:
+                        # Range - get exact lines
+                        range_key = f'{start}-{end}'
+                        range_lines = []
+
+                        for frame_info in index.frames:
+                            if frame_info.last_line < start:
+                                continue
+                            if frame_info.first_line > end:
+                                break
+
+                            frame_data = await anyio.to_thread.run_sync(
+                                partial(decompress_frame, path, frame_info.index, frames)
+                            )
+                            frame_lines = frame_data.decode('utf-8', errors='replace').split('\n')
+
+                            for i, line in enumerate(frame_lines):
+                                current_line = frame_info.first_line + i
+                                if start <= current_line <= end:
+                                    range_lines.append(line)
+
+                        context_data[range_key] = range_lines
+                        line_mapping[range_key] = -1
+
+                num_items = len(parsed_values)
+                duration = time() - time_before
+
+                prom.record_samples_request(
+                    status='success', duration=duration, num_offsets=num_items, before_ctx=before, after_ctx=after
+                )
+                prom.record_http_response('GET', '/v1/samples', 200)
+
+                return {
+                    'path': path,
+                    'offsets': {},
+                    'lines': line_mapping,
+                    'before_context': before,
+                    'after_context': after,
+                    'samples': context_data,
+                    'is_compressed': True,
+                    'compression_format': compression_format.value,
+                }
+
+            # Non-seekable compressed files (gzip, xz, bz2)
+            # Load index from unified cache (or build via FileIndexer if needed)
+            index_data = await anyio.to_thread.run_sync(load_index, path)
+            if index_data is None:
+                # No cached index - build one using FileIndexer
+                indexer = FileIndexer(analyze=True)
+                index_data = await anyio.to_thread.run_sync(indexer.index_file, path)
+
+            context_data = {}
+            line_mapping = {}
 
             for start, end in parsed_values:
                 if end is None:
@@ -1230,7 +1316,7 @@ async def samples(
                             line_number=start,
                             context_before=before,
                             context_after=after,
-                            index_data=index_data,
+                            index=index_data,
                         )
                     )
                     context_data[str(start)] = lines_content
@@ -1245,7 +1331,7 @@ async def samples(
                             source_path=path,
                             start_line=start,
                             count=line_count,
-                            index_data=index_data,
+                            index=index_data,
                         )
                     )
                     context_data[range_key] = range_lines

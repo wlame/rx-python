@@ -330,11 +330,14 @@ class FileIndexer:
         if comp:
             idx.compression_format = comp.value
 
-        # Build or load compressed index (this decompresses the file to count lines)
+        # Build compressed index (decompresses file to count lines and collect stats)
+        # Note: We use build_compressed_index directly, NOT get_or_build_compressed_index,
+        # because the latter saves a dict format that conflicts with UnifiedFileIndex format.
+        # The FileIndexer.index_file() will save the final UnifiedFileIndex.
         try:
             from rx import compressed_index
 
-            comp_idx = compressed_index.get_or_build_compressed_index(filepath)
+            comp_idx = compressed_index.build_compressed_index(filepath)
             if comp_idx:
                 idx.line_index = comp_idx.get('line_index', [])
                 idx.decompressed_size_bytes = comp_idx.get('decompressed_size_bytes')
@@ -342,6 +345,18 @@ class FileIndexer:
 
                 if idx.decompressed_size_bytes and idx.source_size_bytes:
                     idx.compression_ratio = idx.decompressed_size_bytes / idx.source_size_bytes
+
+                # Copy line statistics
+                idx.empty_line_count = comp_idx.get('empty_line_count')
+                idx.line_ending = comp_idx.get('line_ending')
+                idx.line_length_max = comp_idx.get('line_length_max')
+                idx.line_length_avg = comp_idx.get('line_length_avg')
+                idx.line_length_median = comp_idx.get('line_length_median')
+                idx.line_length_p95 = comp_idx.get('line_length_p95')
+                idx.line_length_p99 = comp_idx.get('line_length_p99')
+                idx.line_length_stddev = comp_idx.get('line_length_stddev')
+                idx.line_length_max_line_number = comp_idx.get('line_length_max_line_number')
+                idx.line_length_max_byte_offset = comp_idx.get('line_length_max_byte_offset')
 
         except Exception as e:
             logger.warning(f'Failed to build compressed index for {filepath}: {e}')
