@@ -79,10 +79,6 @@ class ErrorKeywordDetector(AnomalyDetector):
         if max_severity is not None and matched_keyword:
             self._detection_count += 1
             self._keyword_counts[matched_keyword] = self._keyword_counts.get(matched_keyword, 0) + 1
-            logger.debug(
-                f'[error_keyword] {self._filepath}: Detected "{matched_keyword}" (severity={max_severity}) '
-                f'at line {ctx.line_number}: {line.rstrip()[:80]}{"..." if len(line) > 80 else ""}'
-            )
 
         return max_severity
 

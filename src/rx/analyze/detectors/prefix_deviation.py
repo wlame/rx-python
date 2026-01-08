@@ -58,15 +58,9 @@ class PrefixDeviationDetector(AnomalyDetector):
         if prefix_regex:
             try:
                 self._pattern = re.compile(prefix_regex)
-                logger.debug(
-                    f'[prefix_deviation] {filepath}: Initialized with pattern (len={prefix_length}): '
-                    f'{prefix_regex[:80]}{"..." if len(prefix_regex) > 80 else ""}'
-                )
             except re.error as e:
                 logger.warning(f'[prefix_deviation] {filepath}: Invalid regex pattern: {e}')
                 self._pattern = None
-        else:
-            logger.debug(f'[prefix_deviation] {filepath}: Initialized without pattern (disabled)')
 
     @property
     def name(self) -> str:
@@ -139,17 +133,9 @@ class PrefixDeviationDetector(AnomalyDetector):
             # Indented line - likely continuation, slightly lower severity
             self._continuation_count += 1
             severity = self._severity * 0.8
-            logger.debug(
-                f'[prefix_deviation] {self._filepath}: Detected indented continuation (severity={severity:.2f}) '
-                f'at line {ctx.line_number}: {line[:60]}{"..." if len(line) > 60 else ""}'
-            )
             return severity
 
         self._detection_count += 1
-        logger.debug(
-            f'[prefix_deviation] {self._filepath}: Detected deviation (severity={self._severity:.2f}) '
-            f'at line {ctx.line_number}: {line[:60]}{"..." if len(line) > 60 else ""}'
-        )
         return self._severity
 
     def should_merge_with_previous(self, ctx: LineContext, prev_severity: float) -> bool:
@@ -175,7 +161,6 @@ class PrefixDeviationDetector(AnomalyDetector):
         # If current line also doesn't match prefix, merge with previous
         if not self._pattern.match(line):
             self._merge_count += 1
-            logger.debug(f'[prefix_deviation] {self._filepath}: Merging non-matching line at {ctx.line_number}')
             return True
 
         return False

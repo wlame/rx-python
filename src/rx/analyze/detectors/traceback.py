@@ -100,10 +100,6 @@ class TracebackDetector(AnomalyDetector):
             for pattern in lang_patterns:
                 if pattern.match(line):
                     self._detection_count += 1
-                    logger.debug(
-                        f'[traceback] {self._filepath}: Detected {lang} traceback at line {ctx.line_number}: '
-                        f'{line[:80]}{"..." if len(line) > 80 else ""}'
-                    )
                     return 0.9
 
         return None
@@ -115,10 +111,6 @@ class TracebackDetector(AnomalyDetector):
         for pattern in self.TRACEBACK_CONTINUATION_PATTERNS:
             if pattern.match(line):
                 self._merge_count += 1
-                logger.debug(
-                    f'[traceback] {self._filepath}: Merging continuation at line {ctx.line_number}: '
-                    f'{line[:60]}{"..." if len(line) > 60 else ""}'
-                )
                 return True
 
         # Also merge if previous was a traceback and this looks like an error message
@@ -126,10 +118,6 @@ class TracebackDetector(AnomalyDetector):
             # Check if this is an exception message (starts with exception name)
             if re.match(r'^\w+(Error|Exception):', line):
                 self._merge_count += 1
-                logger.debug(
-                    f'[traceback] {self._filepath}: Merging exception message at line {ctx.line_number}: '
-                    f'{line[:60]}{"..." if len(line) > 60 else ""}'
-                )
                 return True
 
         return False

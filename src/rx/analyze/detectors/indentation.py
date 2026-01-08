@@ -86,10 +86,6 @@ class IndentationBlockDetector(AnomalyDetector):
             # If we have a consistent indentation block
             if indented_count >= self.MIN_BLOCK_SIZE - 1:
                 self._detection_count += 1
-                logger.debug(
-                    f'[indentation_block] {self._filepath}: Detected indented block (indent={indent}) '
-                    f'at line {ctx.line_number}: {line[:60]}{"..." if len(line) > 60 else ""}'
-                )
                 return 0.4
 
         return None
@@ -100,7 +96,6 @@ class IndentationBlockDetector(AnomalyDetector):
             return False
         if self._get_indentation(line) >= self.MIN_INDENTATION:
             self._merge_count += 1
-            logger.debug(f'[indentation_block] {self._filepath}: Merging indented line at {ctx.line_number}')
             return True
         return False
 

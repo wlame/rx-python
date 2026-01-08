@@ -172,11 +172,6 @@ class TimestampGapDetector(AnomalyDetector):
         if self._locked_format is None:
             if self._format_counts[fmt_idx] >= self._format_lock_threshold:
                 self._locked_format = fmt_idx
-                format_names = ['ISO8601', 'common_log', 'unix_timestamp', 'HH:MM:SS']
-                logger.debug(
-                    f'[timestamp_gap] {self._filepath}: Locked to timestamp format {format_names[fmt_idx]} '
-                    f'after {self._format_counts[fmt_idx]} matches'
-                )
 
     def check_line(self, ctx: LineContext) -> float | None:
         timestamp, fmt_idx = self._parse_timestamp(ctx.line)
@@ -223,19 +218,6 @@ class TimestampGapDetector(AnomalyDetector):
             self._detection_count += 1
             if gap > self._max_gap_detected:
                 self._max_gap_detected = gap
-
-            # Format gap for human readability
-            if gap >= 3600:
-                gap_str = f'{gap / 3600:.1f}h'
-            elif gap >= 60:
-                gap_str = f'{gap / 60:.1f}m'
-            else:
-                gap_str = f'{gap:.0f}s'
-
-            logger.debug(
-                f'[timestamp_gap] {self._filepath}: Detected timestamp gap of {gap_str} '
-                f'(severity={severity:.2f}) at line {ctx.line_number}'
-            )
             return severity
 
         return None

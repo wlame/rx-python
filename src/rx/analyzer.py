@@ -1316,6 +1316,7 @@ class FileAnalyzer:
             List of detector instances configured for this file.
         """
         if self._custom_detectors is not None:
+            logger.debug(f'[DETECTOR] Using {len(self._custom_detectors)} custom detectors')
             return self._custom_detectors  # Use custom detectors as-is
 
         # Import from rx.analyze.detectors to get the versions with logging
@@ -1347,7 +1348,7 @@ class FileAnalyzer:
             WarningKeywordDetector as WKD,
         )
 
-        return [
+        detectors = [
             TBD(filepath=filepath),
             EKD(filepath=filepath),
             WKD(filepath=filepath),
@@ -1358,6 +1359,8 @@ class FileAnalyzer:
             JDD(filepath=filepath),
             FDD(filepath=filepath),
         ]
+        logger.debug(f'[DETECTOR] Created {len(detectors)} default detectors: {[d.name for d in detectors]}')
+        return detectors
 
     def file_hook(self, filepath: str, result: FileAnalysisState) -> None:
         """
@@ -1978,6 +1981,10 @@ class FileAnalyzer:
             context_detectors: list[AnomalyDetector] = []
             # Detector name -> detector for keyword prescan results
             detector_by_name: dict[str, AnomalyDetector] = {}
+            # Debug: timing and hit count per detector
+            detector_timing: dict[str, float] = {}
+            detector_hits: dict[str, int] = {}
+            analysis_start_time = time()
 
             if self.detect_anomalies:
                 window = deque(maxlen=self.ANOMALY_WINDOW_SIZE)
@@ -2048,6 +2055,14 @@ class FileAnalyzer:
                 # (prescan just helps with fast rejection of non-matching lines)
                 for detector in self.anomaly_detectors:
                     context_detectors.append(detector)
+                    # Initialize timing and hit counters
+                    detector_timing[detector.name] = 0.0
+                    detector_hits[detector.name] = 0
+
+                logger.debug(
+                    f'[ANALYZE] Starting analysis of {filepath} ({file_size:,} bytes) '
+                    f'with {len(self.anomaly_detectors)} detectors'
+                )
 
             # Use binary mode to handle all line ending types correctly
             with open(filepath, 'rb') as f:
@@ -2119,24 +2134,33 @@ class FileAnalyzer:
                         if keyword_prescan_lines and line_num in keyword_prescan_lines:
                             detector = detector_by_name.get('error_keyword')
                             if detector and isinstance(detector, ErrorKeywordDetector):
+                                det_start = time()
                                 severity = detector.check_line(ctx)
+                                detector_timing[detector.name] += time() - det_start
                                 if severity is not None:
+                                    detector_hits[detector.name] += 1
                                     if anomaly_heap.push(detector.name, line_num, byte_offset, severity, line):
                                         line_offsets.mark_anomaly(line_num)
 
                         if warning_prescan_lines and line_num in warning_prescan_lines:
                             detector = detector_by_name.get('warning_keyword')
                             if detector and isinstance(detector, WarningKeywordDetector):
+                                det_start = time()
                                 severity = detector.check_line(ctx)
+                                detector_timing[detector.name] += time() - det_start
                                 if severity is not None:
+                                    detector_hits[detector.name] += 1
                                     if anomaly_heap.push(detector.name, line_num, byte_offset, severity, line):
                                         line_offsets.mark_anomaly(line_num)
 
                         if secret_prescan_lines and line_num in secret_prescan_lines:
                             detector = detector_by_name.get('high_entropy')
                             if detector and isinstance(detector, HighEntropyDetector):
+                                det_start = time()
                                 severity = detector.check_line(ctx)
+                                detector_timing[detector.name] += time() - det_start
                                 if severity is not None:
+                                    detector_hits[detector.name] += 1
                                     if anomaly_heap.push(detector.name, line_num, byte_offset, severity, line):
                                         line_offsets.mark_anomaly(line_num)
 
@@ -2150,8 +2174,11 @@ class FileAnalyzer:
                                 continue
                             if secret_prescan_lines and isinstance(detector, HighEntropyDetector):
                                 continue
+                            det_start = time()
                             severity = detector.check_line(ctx)
+                            detector_timing[detector.name] += time() - det_start
                             if severity is not None:
+                                detector_hits[detector.name] += 1
                                 if anomaly_heap.push(detector.name, line_num, byte_offset, severity, line):
                                     line_offsets.mark_anomaly(line_num)
 
@@ -2222,6 +2249,33 @@ class FileAnalyzer:
                 for anomaly in result.anomalies:
                     category = anomaly.category
                     result.anomaly_summary[category] = result.anomaly_summary.get(category, 0) + 1
+
+            # Log debug summary for anomaly detection
+            if self.detect_anomalies and detector_timing:
+                total_analysis_time = time() - analysis_start_time
+                lines_per_sec = last_line_num / total_analysis_time if total_analysis_time > 0 else 0
+
+                logger.debug(
+                    f'[ANALYZE] Completed {filepath}: {last_line_num:,} lines in {total_analysis_time:.2f}s '
+                    f'({lines_per_sec:,.0f} lines/sec)'
+                )
+                logger.debug(f'[ANALYZE] Anomaly heap size: {len(anomaly_heap) if anomaly_heap else 0}')
+                logger.debug(f'[ANALYZE] Final anomalies after merge: {len(result.anomalies)}')
+
+                # Log per-detector timing and hits
+                logger.debug('[ANALYZE] Detector statistics:')
+                for det_name in sorted(detector_timing.keys()):
+                    det_time = detector_timing[det_name]
+                    det_hits = detector_hits.get(det_name, 0)
+                    pct_time = (det_time / total_analysis_time * 100) if total_analysis_time > 0 else 0
+                    logger.debug(
+                        f'[ANALYZE]   {det_name}: {det_time:.3f}s ({pct_time:.1f}%), '
+                        f'{det_hits} hits'
+                    )
+
+                # Log anomaly summary by category
+                if result.anomaly_summary:
+                    logger.debug(f'[ANALYZE] Anomaly summary: {result.anomaly_summary}')
 
         except Exception as e:
             logger.error(f'Failed to analyze text content of {filepath}: {e}')

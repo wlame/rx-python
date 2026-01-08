@@ -113,10 +113,6 @@ class JsonDumpDetector(AnomalyDetector):
                     severity = 0.3
 
                 self._detection_count += 1
-                logger.debug(
-                    f'[json_dump] {self._filepath}: Detected JSON dump (len={len(line)}, '
-                    f'json_lines={json_like_lines}, severity={severity:.2f}) at line {ctx.line_number}'
-                )
                 return severity
 
         return None
@@ -167,7 +163,6 @@ class JsonDumpDetector(AnomalyDetector):
 
         if self._is_json_like_line(line):
             self._merge_count += 1
-            logger.debug(f'[json_dump] {self._filepath}: Merging JSON line at {ctx.line_number}')
             return True
         return False
 

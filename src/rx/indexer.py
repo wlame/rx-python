@@ -145,9 +145,21 @@ class FileIndexer:
                     return cached
 
             # Build new index
+            logger.debug(f'[INDEX] Starting index build for {filepath} ({file_size:,} bytes)')
             start_time = time()
             idx = self._build_index(filepath, stat)
             idx.build_time_seconds = time() - start_time
+
+            # Log build summary
+            logger.debug(
+                f'[INDEX] Completed {filepath}: '
+                f'{idx.line_count:,} lines in {idx.build_time_seconds:.2f}s'
+            )
+            if idx.anomalies:
+                logger.debug(
+                    f'[INDEX] Anomalies found: {len(idx.anomalies)} '
+                    f'(summary: {idx.anomaly_summary})'
+                )
 
             # Save to cache
             save_index(idx)
@@ -198,22 +210,46 @@ class FileIndexer:
             result.total_time = time() - start_time
             return result
 
+        logger.debug(
+            f'[INDEX] Processing {len(files_to_process)} files with {max_workers} workers '
+            f'(analyze={self.analyze}, force={self.force})'
+        )
+
         # Process files in parallel
+        completed_count = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {executor.submit(self.index_file, f): f for f in files_to_process}
 
             for future in as_completed(future_to_file):
                 filepath = future_to_file[future]
+                completed_count += 1
                 try:
                     idx = future.result()
                     if idx:
                         result.indexed.append(idx)
+                        logger.debug(
+                            f'[INDEX] [{completed_count}/{len(files_to_process)}] '
+                            f'Indexed: {filepath}'
+                        )
                     else:
                         result.skipped.append(filepath)
+                        logger.debug(
+                            f'[INDEX] [{completed_count}/{len(files_to_process)}] '
+                            f'Skipped: {filepath}'
+                        )
                 except Exception as e:
                     result.errors.append((filepath, str(e)))
+                    logger.debug(
+                        f'[INDEX] [{completed_count}/{len(files_to_process)}] '
+                        f'Error: {filepath}: {e}'
+                    )
 
         result.total_time = time() - start_time
+        logger.debug(
+            f'[INDEX] Completed: {len(result.indexed)} indexed, '
+            f'{len(result.skipped)} skipped, {len(result.errors)} errors '
+            f'in {result.total_time:.2f}s'
+        )
         return result
 
     def _build_index(self, filepath: str, stat: os.stat_result) -> UnifiedFileIndex:
@@ -407,6 +443,10 @@ class FileIndexer:
         try:
             from rx.analyzer import FileAnalyzer
 
+            logger.debug(f'[ANALYZE] Starting anomaly detection for {filepath}')
+            logger.debug(f'[ANALYZE] Using {len(self.detectors)} detectors: {[d.name for d in self.detectors]}')
+            analyze_start = time()
+
             analyzer = FileAnalyzer(
                 use_index_cache=False,
                 detect_anomalies=True,
@@ -414,6 +454,12 @@ class FileIndexer:
             )
 
             result = analyzer.analyze_file(filepath, 'f1')
+            analyze_time = time() - analyze_start
+
+            logger.debug(
+                f'[ANALYZE] Completed {filepath} in {analyze_time:.2f}s: '
+                f'{result.line_count:,} lines, {len(result.anomalies)} anomalies'
+            )
 
             # Copy anomalies to unified index, fixing line numbers from offsets
             if result.anomalies:

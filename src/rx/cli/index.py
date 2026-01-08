@@ -11,15 +11,24 @@ from rx.indexer import FileIndexer
 from rx.unified_index import delete_index, load_index
 
 
-def _setup_logging():
-    """Setup logging based on RX_LOG_LEVEL environment variable."""
-    log_level_str = os.environ.get('RX_LOG_LEVEL', 'WARNING').upper()
-    log_level = getattr(logging, log_level_str, logging.WARNING)
+def _setup_logging(debug: bool = False):
+    """Setup logging based on --debug flag or RX_LOG_LEVEL environment variable.
+
+    Args:
+        debug: If True, force DEBUG level logging with detailed format
+    """
+    if debug:
+        log_level = logging.DEBUG
+        log_format = '%(asctime)s.%(msecs)03d %(name)s [%(levelname)s] %(message)s'
+    else:
+        log_level_str = os.environ.get('RX_LOG_LEVEL', 'WARNING').upper()
+        log_level = getattr(logging, log_level_str, logging.WARNING)
+        log_format = '%(asctime)s %(name)s [%(levelname)s] %(message)s'
 
     # Configure root logger for rx modules
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s %(name)s [%(levelname)s] %(message)s',
+        format=log_format,
         datefmt='%H:%M:%S',
         stream=sys.stderr,
     )
@@ -56,6 +65,7 @@ def human_readable_size(size_bytes: int) -> str:
     help='Only index files larger than this (MB). Default: 50MB. Ignored with --analyze.',
 )
 @click.option('--max-workers', type=int, default=10, help='Maximum parallel workers (default: 10)')
+@click.option('--debug', is_flag=True, help='Enable detailed debug logging for analysis')
 def index_command(
     paths: tuple[str, ...],
     force: bool,
@@ -66,6 +76,7 @@ def index_command(
     analyze: bool,
     threshold: int | None,
     max_workers: int,
+    debug: bool,
 ):
     """Create or manage file indexes with optional analysis.
 
@@ -94,9 +105,14 @@ def index_command(
     \b
     Environment variables:
         RX_LOG_LEVEL: Set logging level (DEBUG, INFO, WARNING, ERROR)
+
+    \b
+    Debug mode (--debug):
+        Shows detailed timing for each detector, lines processed,
+        anomalies found, and thread/worker statistics.
     """
     # Setup logging first
-    _setup_logging()
+    _setup_logging(debug=debug)
 
     # Handle info and delete modes with existing logic
     if info or delete:

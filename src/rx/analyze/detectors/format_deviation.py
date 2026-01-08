@@ -92,10 +92,6 @@ class FormatDeviationDetector(AnomalyDetector):
 
                 if not self._pattern_locked and self._dominant_pattern is not None:
                     self._pattern_locked = True
-                    logger.debug(
-                        f'[format_deviation] {self._filepath}: Locked dominant pattern after {self._total_lines} lines: '
-                        f'{self._dominant_pattern}'
-                    )
 
         # Check for deviation from dominant pattern
         if self._dominant_pattern is not None:
@@ -108,11 +104,6 @@ class FormatDeviationDetector(AnomalyDetector):
                     if format_frequency < 0.05:  # Less than 5% of lines
                         severity = min(0.3 + (diff_count * 0.1), 0.6)
                         self._detection_count += 1
-                        logger.debug(
-                            f'[format_deviation] {self._filepath}: Detected deviation (diff={diff_count}, '
-                            f'freq={format_frequency:.2%}, severity={severity:.2f}) at line {ctx.line_number}: '
-                            f'{line.rstrip()[:60]}{"..." if len(line) > 60 else ""}'
-                        )
                         return severity
 
         return None

@@ -71,11 +71,6 @@ class LineLengthSpikeDetector(AnomalyDetector):
             self._detection_count += 1
             if line_len > self._max_detected_length:
                 self._max_detected_length = line_len
-            logger.debug(
-                f'[line_length_spike] {self._filepath}: Detected long line ({line_len} chars, '
-                f'avg={ctx.avg_line_length:.1f}, stddev={ctx.stddev_line_length:.1f}, severity={severity:.2f}) '
-                f'at line {ctx.line_number}'
-            )
             return severity
 
         return None
