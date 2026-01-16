@@ -774,14 +774,31 @@ def identify_matching_patterns(
         line_text: The matched line text
         submatches: List of Submatch objects with matched text and positions
         pattern_ids: Dictionary mapping pattern_id -> pattern string
+        rg_extra_args: List of extra arguments passed to ripgrep (e.g., ['-i'] for case-insensitive)
 
     Returns:
-        List of pattern_ids that matched (may contain multiple patterns)
+        List of pattern_ids that matched (may contain multiple patterns).
+        Returns empty list if no patterns match (this can happen with stale cache data).
     """
+    # Determine regex flags from rg_extra_args
+    flags = re.NOFLAG
+    if rg_extra_args and '-i' in rg_extra_args:
+        flags |= re.IGNORECASE
 
     if not submatches:
-        # No submatches, return first pattern
-        return [list(pattern_ids.keys())[0]]
+        # No submatches available - we must validate each pattern against the line directly.
+        # This can happen when matches are reconstructed from cache where submatch data
+        # wasn't preserved. We cannot blindly assume the first pattern matches.
+        matching_pattern_ids = []
+        for pattern_id, pattern in pattern_ids.items():
+            try:
+                regex = re.compile(pattern, flags)
+                if regex.search(line_text):
+                    matching_pattern_ids.append(pattern_id)
+            except re.error:
+                # Invalid regex, skip
+                continue
+        return matching_pattern_ids
 
     # Get the matched text from submatches
     matched_texts = set(sm.text for sm in submatches)
@@ -791,11 +808,6 @@ def identify_matching_patterns(
     # Try each pattern to see which ones match
     for pattern_id, pattern in pattern_ids.items():
         try:
-            # Compile the pattern
-            # regex = re.compile(pattern, re.IGNORECASE if '-i' in os.environ.get('RG_FLAGS', '') else 0)
-            flags = re.NOFLAG
-            if rg_extra_args and '-i' in rg_extra_args:
-                flags |= re.IGNORECASE
             regex = re.compile(pattern, flags)
 
             # Find all matches in the line
@@ -808,10 +820,6 @@ def identify_matching_patterns(
         except re.error:
             # Invalid regex, skip
             continue
-
-    # Fallback: return first pattern if we couldn't identify any
-    if not matching_pattern_ids:
-        matching_pattern_ids = [list(pattern_ids.keys())[0]]
 
     return matching_pattern_ids
 
