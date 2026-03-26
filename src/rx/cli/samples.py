@@ -510,11 +510,7 @@ def samples_command(
                         context_data[range_key] = range_lines
                         line_to_offset[range_key] = -1
 
-            # Use calculated offsets for seekable zstd, -1 for other formats
-            if is_seekable_zstd(path):
-                lines_dict = line_to_offset
-            else:
-                lines_dict = line_to_offset
+            lines_dict = line_to_offset
 
             response = SamplesResponse(
                 path=path,

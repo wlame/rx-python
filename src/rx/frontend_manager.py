@@ -16,6 +16,7 @@ Environment Variables:
 import json
 import logging
 import os
+import shutil
 import tarfile
 from dataclasses import dataclass
 from datetime import datetime

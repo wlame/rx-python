@@ -206,8 +206,6 @@ def build_compressed_index(
         if partial_line_length > 0:
             current_line += 1
             line_lengths.append(partial_line_length)
-            if partial_line_length == 0:
-                empty_line_count += 1
             if partial_line_length > max_line_length:
                 max_line_length = partial_line_length
                 max_line_number = current_line

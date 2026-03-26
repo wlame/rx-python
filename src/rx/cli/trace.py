@@ -80,7 +80,7 @@ def build_lines_dict(ctx_lines: list, matched_line: str | None, match_line_numbe
         lines_by_number[line_num] = line_text
 
     # Add the matched line
-    if matched_line and match_line_number:
+    if matched_line and match_line_number is not None:
         lines_by_number[match_line_number] = matched_line
 
     return lines_by_number
@@ -605,4 +605,4 @@ def trace_command(
 
 
 if __name__ == '__main__':
-    search_command()
+    trace_command()

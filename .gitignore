@@ -44,5 +44,7 @@ htmlcov/
 # temp
 
 docs/
+spec/
 scripts/
 .claude/
+.serena/

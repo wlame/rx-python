@@ -153,7 +153,7 @@ class FileIndexer:
             # Log build summary
             logger.debug(
                 f'[INDEX] Completed {filepath}: '
-                f'{idx.line_count:,} lines in {idx.build_time_seconds:.2f}s'
+                f'{idx.line_count or 0:,} lines in {idx.build_time_seconds:.2f}s'
             )
             if idx.anomalies:
                 logger.debug(

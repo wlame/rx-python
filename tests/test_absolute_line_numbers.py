@@ -4,6 +4,8 @@ import json
 import os
 import tempfile
 
+import pytest
+
 from click.testing import CliRunner
 
 from rx.cli.trace import trace_command
@@ -85,13 +87,15 @@ class TestAbsoluteLineNumbers:
 
         zst_file = os.path.join(self.temp_dir, 'test.txt.zst')
         # Use zstd CLI to create seekable format
-        result = subprocess.run(
-            ['zstd', '-19', '--ultra', '-22', '-o', zst_file, self.test_file],
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                ['zstd', '--ultra', '-22', '-o', zst_file, self.test_file],
+                capture_output=True,
+            )
+        except FileNotFoundError:
+            pytest.skip('zstd CLI not installed')
         if result.returncode != 0:
-            # Skip if zstd CLI not available
-            return
+            pytest.skip('zstd compression failed')
 
         # Try to make it seekable (may fail if not supported)
         try:

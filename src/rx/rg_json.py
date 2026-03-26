@@ -261,7 +261,9 @@ def parse_rg_json_event(json_line: str | bytes) -> RgEvent | None:
             'end': RgEndEvent,
             'summary': RgSummaryEvent,
         }
-        model = event_models[event_type]
+        model = event_models.get(event_type)
+        if model is None:
+            return None
         return model(**data)
 
     except json.JSONDecodeError as e:

@@ -162,6 +162,10 @@ class FileIndex(BaseModel):
             'line_index': self.line_index,
         }
 
+        # Add build_time_seconds for all types
+        if self.build_time_seconds is not None:
+            result['build_time_seconds'] = self.build_time_seconds
+
         # Add type-specific fields
         if self.index_type == IndexType.REGULAR:
             if self.index_step_bytes is not None:
@@ -178,8 +182,6 @@ class FileIndex(BaseModel):
                 result['total_lines'] = self.total_lines
             if self.line_sample_interval is not None:
                 result['line_sample_interval'] = self.line_sample_interval
-            if self.build_time_seconds is not None:
-                result['build_time_seconds'] = self.build_time_seconds
 
         elif self.index_type == IndexType.SEEKABLE_ZSTD:
             result['source_zst_path'] = self.source_path

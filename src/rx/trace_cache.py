@@ -371,9 +371,10 @@ def reconstruct_match_data(
 
     all_lines = context_data.get(line_number, [])
 
-    # Find the matched line (middle of context window if context was requested)
-    if context_before > 0 and len(all_lines) > context_before:
-        matched_line_idx = context_before
+    # Find the matched line position in the context window.
+    # Near the start of a file, fewer than context_before lines may precede the match.
+    if context_before > 0 and all_lines:
+        matched_line_idx = min(context_before, line_number - 1)
     else:
         matched_line_idx = 0
 

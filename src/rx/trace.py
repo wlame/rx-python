@@ -135,7 +135,7 @@ def process_compressed_file(
 
             if isinstance(event, RgMatchEvent):
                 # Check max_results limit
-                if max_results and match_count >= max_results:
+                if max_results is not None and match_count >= max_results:
                     break
 
                 match_data = event.data
@@ -419,190 +419,6 @@ def process_seekable_zstd_frame_batch(
         raise
 
 
-def process_seekable_zstd_frame(
-    filepath: str,
-    frame_index: int,
-    first_line: int,
-    decompressed_offset: int,
-    frames: list,
-    pattern_ids: dict[str, str],
-    rg_extra_args: list | None = None,
-    context_before: int = 0,
-    context_after: int = 0,
-) -> tuple[int, list[dict], list[ContextLine], float]:
-    """
-    Process a single frame from a seekable zstd file.
-
-    Decompresses the frame and pipes the content to ripgrep for pattern matching.
-    Line numbers and byte offsets are adjusted based on the frame's position in the file.
-
-    Args:
-        filepath: Path to the seekable zstd file
-        frame_index: Index of the frame to process (0-based)
-        first_line: First line number in this frame (1-based)
-        decompressed_offset: Byte offset of this frame in the decompressed file
-        frames: Pre-loaded list of FrameInfo objects (avoids redundant seek table reads)
-        pattern_ids: Dictionary mapping pattern_id -> pattern string
-        rg_extra_args: Optional list of extra arguments to pass to ripgrep
-        context_before: Number of context lines before each match
-        context_after: Number of context lines after each match
-
-    Returns:
-        Tuple of (frame_index, list_of_match_dicts, list_of_context_lines, execution_time)
-    """
-    if rg_extra_args is None:
-        rg_extra_args = []
-
-    start_time = time.time()
-    thread_id = threading.current_thread().name
-
-    logger.debug(f'[SEEKABLE {thread_id}] Processing frame {frame_index} from {filepath}')
-
-    # Track active workers
-    prom.active_workers.inc()
-
-    try:
-        # Get frame info
-        frame = frames[frame_index]
-        compressed_offset = frame.compressed_offset
-        compressed_size = frame.compressed_size
-
-        # Read compressed frame bytes (I/O bound, releases GIL)
-        with open(filepath, 'rb') as f:
-            f.seek(compressed_offset)
-            compressed_data = f.read(compressed_size)
-
-        # Use CLI pipeline for decompression:
-        # zstd -d (native C decompression) | rg (search)
-        # This avoids Python GIL for CPU-bound decompression
-
-        # zstd decompress command
-        zstd_cmd = ['zstd', '-d', '-c']
-
-        # Build ripgrep command with --json and multiple -e patterns
-        rg_cmd = ['rg', '--json', '--no-heading', '--color=never']
-
-        # Add context flags if requested
-        if context_before > 0:
-            rg_cmd.extend(['-B', str(context_before)])
-        if context_after > 0:
-            rg_cmd.extend(['-A', str(context_after)])
-
-        # Add all patterns with -e flag
-        for pattern in pattern_ids.values():
-            rg_cmd.extend(['-e', pattern])
-
-        # Add extra args (but filter out incompatible ones)
-        filtered_extra_args = [arg for arg in rg_extra_args if arg not in ['--byte-offset', '--only-matching']]
-        rg_cmd.extend(filtered_extra_args)
-
-        rg_cmd.append('-')  # Read from stdin
-
-        logger.debug(f'[SEEKABLE {thread_id}] Pipeline: zstd -d | rg')
-
-        # Create pipeline: zstd | rg
-        zstd_proc = subprocess.Popen(
-            zstd_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        rg_proc = subprocess.Popen(
-            rg_cmd,
-            stdin=zstd_proc.stdout,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        zstd_proc.stdout.close()  # Allow zstd to receive SIGPIPE if rg exits
-
-        # Feed compressed data to zstd (this happens in parallel with rg processing)
-        zstd_proc.stdin.write(compressed_data)
-        zstd_proc.stdin.close()
-
-        stdout, stderr = rg_proc.communicate()
-
-        # Wait for zstd to finish
-        zstd_proc.wait()
-
-        # Parse JSON events from ripgrep output
-        matches = []
-        context_lines = []
-
-        for line in stdout.splitlines():
-            event = parse_rg_json_event(line)
-
-            if isinstance(event, RgMatchEvent):
-                match_data = event.data
-
-                # Adjust line number by adding frame's first_line offset
-                # rg returns 1-based line numbers within the frame content
-                adjusted_line_number = first_line + match_data.line_number - 1
-
-                # Calculate absolute byte offset in decompressed file
-                # match_data.absolute_offset is relative to the frame
-                absolute_offset = decompressed_offset + match_data.absolute_offset
-
-                # Extract submatches
-                submatches = [Submatch(text=sm.text, start=sm.start, end=sm.end) for sm in match_data.submatches]
-
-                matches.append(
-                    {
-                        'offset': absolute_offset,  # Absolute offset in decompressed file
-                        'frame_index': frame_index,
-                        'pattern_ids': list(pattern_ids.keys()),
-                        'line_number': adjusted_line_number,
-                        'absolute_line_number': adjusted_line_number,  # We know absolute line number
-                        'line_text': match_data.lines.text.rstrip(NEWLINE_SYMBOL),
-                        'submatches': submatches,
-                        'is_compressed': True,
-                        'is_seekable_zstd': True,
-                    }
-                )
-
-                logger.debug(
-                    f'[SEEKABLE {thread_id}] Match: frame={frame_index}, '
-                    f'line={adjusted_line_number}, submatches={len(submatches)}'
-                )
-
-            elif isinstance(event, RgContextEvent):
-                context_data = event.data
-                adjusted_line_number = first_line + context_data.line_number - 1
-                absolute_context_offset = decompressed_offset + context_data.absolute_offset
-
-                context_lines.append(
-                    ContextLine(
-                        relative_line_number=adjusted_line_number,
-                        absolute_line_number=adjusted_line_number,  # We know absolute line number
-                        line_text=context_data.lines.text.rstrip(NEWLINE_SYMBOL),
-                        absolute_offset=absolute_context_offset,
-                    )
-                )
-
-        elapsed = time.time() - start_time
-
-        logger.debug(
-            f'[SEEKABLE {thread_id}] Frame {frame_index} completed: '
-            f'{len(matches)} matches, {len(context_lines)} context lines in {elapsed:.3f}s'
-        )
-
-        # Track task completion
-        prom.worker_tasks_completed.inc()
-        prom.active_workers.dec()
-
-        return (frame_index, matches, context_lines, elapsed)
-
-    except Exception as e:
-        elapsed = time.time() - start_time
-        logger.error(f'[SEEKABLE {thread_id}] Frame {frame_index} failed after {elapsed:.3f}s: {e}')
-
-        # Track task failure
-        prom.worker_tasks_failed.inc()
-        prom.active_workers.dec()
-
-        return (frame_index, [], [], elapsed)
-
-
 def process_seekable_zstd_file(
     filepath: str,
     pattern_ids: dict[str, str],
@@ -724,7 +540,7 @@ def process_seekable_zstd_file(
     all_matches.sort(key=lambda m: m['line_number'])
 
     # Apply max_results limit
-    if max_results and len(all_matches) > max_results:
+    if max_results is not None and len(all_matches) > max_results:
         all_matches = all_matches[:max_results]
 
     elapsed = time.time() - start_time
@@ -1688,7 +1504,7 @@ def parse_multiple_files_multipattern(
                     )
 
                     # Check max_results
-                    if max_results and len(matches) >= max_results:
+                    if max_results is not None and len(matches) >= max_results:
                         logger.info(f'[PARSE_JSON] Reached max_results={max_results}, cancelling remaining')
                         max_results_hit = True
                         for f in future_to_task:
@@ -1699,8 +1515,8 @@ def parse_multiple_files_multipattern(
                     logger.error(f'[PARSE_JSON] Task failed: {e}')
 
     # Write cache for large files that completed successfully
-    # Only cache if: no max_results limit, all tasks completed
-    if use_cache and max_results is None and not max_results_hit:
+    # Only cache if no max_results limit was hit (partial scans shouldn't be cached)
+    if use_cache and not max_results_hit:
         for file_id, stats in file_stats.items():
             filepath = stats['filepath']
             file_size = stats['file_size']
