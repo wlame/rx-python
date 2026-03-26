@@ -1995,13 +1995,7 @@ def get_entry_metadata(entry_path: str, entry_name: str, is_dir: bool) -> dict:
     return result
 
 
-def human_readable_size(size_bytes: int) -> str:
-    """Convert bytes to human-readable format."""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size_bytes < 1024:
-            return f'{size_bytes:.2f} {unit}'
-        size_bytes /= 1024
-    return f'{size_bytes:.2f} PB'
+from rx.models import human_readable_size  # noqa: E402
 
 
 @app.get(

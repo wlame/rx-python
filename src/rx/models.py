@@ -330,12 +330,10 @@ class UnifiedFileIndex(BaseModel):
         Returns:
             FileAnalysisResult with data from this index
         """
-        from rx.file_utils import format_size
-
         return FileAnalysisResult(
             file=file_id,
             size_bytes=self.source_size_bytes,
-            size_human=format_size(self.source_size_bytes),
+            size_human=human_readable_size(self.source_size_bytes),
             is_text=self.is_text,
             permissions=self.permissions,
             owner=self.owner,

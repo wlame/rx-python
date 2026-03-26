@@ -9,6 +9,7 @@ import re
 import statistics
 import subprocess
 import tempfile
+import threading
 from abc import ABC, abstractmethod
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1193,13 +1194,7 @@ def get_sample_size_lines() -> int:
         return 1000000
 
 
-def human_readable_size(size_bytes: int) -> str:
-    """Convert bytes to human-readable format."""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size_bytes < 1024:
-            return f'{size_bytes:.2f} {unit}'
-        size_bytes /= 1024
-    return f'{size_bytes:.2f} PB'
+from rx.models import human_readable_size  # noqa: E402
 
 
 @dataclass
