@@ -1,13 +1,14 @@
 """Parallel ripgrep prescan for fast anomaly detection."""
 
 import json
-import logging
 import re
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from time import time
+
+import structlog
 
 from rx.file_utils import MAX_SUBPROCESSES, FileTask, create_file_tasks
 
@@ -21,7 +22,7 @@ from .detectors import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @dataclass
@@ -81,17 +82,17 @@ def rg_prescan_keywords(filepath: str, patterns: list[tuple[re.Pattern, float]])
                 except (ValueError, IndexError):
                     continue
 
-        logger.info(f'rg prescan found {len(matching_lines)} lines with error keywords in {filepath}')
+        logger.info("Prescan found error keywords", match_count=len(matching_lines), filepath=filepath)
         return matching_lines
 
     except subprocess.TimeoutExpired:
-        logger.warning(f'rg prescan timed out for {filepath}, falling back to line-by-line')
+        logger.warning("Prescan timed out, falling back to line-by-line", filepath=filepath)
         return set()
     except FileNotFoundError:
-        logger.warning('ripgrep (rg) not found, falling back to line-by-line keyword detection')
+        logger.warning("ripgrep (rg) not found, falling back to line-by-line keyword detection")
         return set()
     except Exception as e:
-        logger.warning(f'rg prescan failed: {e}, falling back to line-by-line')
+        logger.warning("Prescan failed, falling back to line-by-line", error=str(e))
         return set()
 
 
@@ -115,7 +116,7 @@ def _prescan_chunk_worker(
     start_time = time()
     thread_id = threading.current_thread().name
 
-    logger.debug(f'[PRESCAN {thread_id}] Processing chunk {task.task_id}: offset={task.offset}, count={task.count}')
+    logger.debug("Processing prescan chunk", thread_id=thread_id, task_id=task.task_id, offset=task.offset, count=task.count)
 
     try:
         # Calculate dd block parameters (same approach as rx trace)
@@ -190,13 +191,13 @@ def _prescan_chunk_worker(
         dd_proc.wait()
 
         elapsed = time() - start_time
-        logger.debug(f'[PRESCAN {thread_id}] Chunk {task.task_id} completed: {len(matches)} matches in {elapsed:.3f}s')
+        logger.debug("Prescan chunk completed", thread_id=thread_id, task_id=task.task_id, match_count=len(matches), elapsed_s=round(elapsed, 3))
 
         return (task, matches, elapsed)
 
     except Exception as e:
         elapsed = time() - start_time
-        logger.error(f'[PRESCAN {thread_id}] Chunk {task.task_id} failed: {e}')
+        logger.error("Prescan chunk failed", thread_id=thread_id, task_id=task.task_id, error=str(e))
         return (task, [], elapsed)
 
 
@@ -252,7 +253,7 @@ def rg_prescan_all_detectors(
 
         # Create file tasks for parallel processing
         tasks = create_file_tasks(filepath)
-        logger.info(f'[PRESCAN] Created {len(tasks)} parallel tasks for {filepath}')
+        logger.info("Created parallel prescan tasks", task_count=len(tasks), filepath=filepath)
 
         # Process chunks in parallel
         all_matches: list[PrescanMatch] = []
@@ -270,7 +271,7 @@ def rg_prescan_all_detectors(
                     all_matches.extend(matches)
                     total_worker_time += elapsed
                 except Exception as e:
-                    logger.error(f'[PRESCAN] Task {task.task_id} failed: {e}')
+                    logger.error("Prescan task failed", task_id=task.task_id, error=str(e))
 
         # Sort by byte offset
         all_matches.sort(key=lambda m: m.byte_offset)
@@ -285,15 +286,18 @@ def rg_prescan_all_detectors(
         elapsed = time() - start_time
         total_matches = len(all_matches)
         logger.info(
-            f'[PRESCAN] Completed in {elapsed:.1f}s (worker time: {total_worker_time:.1f}s): '
-            f'{total_matches} matches across {len(matches_by_detector)} detectors'
+            "Prescan completed",
+            elapsed_s=round(elapsed, 1),
+            worker_time_s=round(total_worker_time, 1),
+            total_matches=total_matches,
+            detector_count=len(matches_by_detector),
         )
 
         return matches_by_detector
 
     except FileNotFoundError:
-        logger.warning('ripgrep (rg) not found')
+        logger.warning("ripgrep (rg) not found")
         return {}
     except Exception as e:
-        logger.warning(f'rg prescan failed: {e}')
+        logger.warning("Prescan failed", error=str(e))
         return {}

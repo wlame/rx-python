@@ -33,7 +33,10 @@ hiddenimports = [
     'rx.cli.prometheus',
     'rx.models',
     'rx.trace',
+    'rx.trace_compressed',
+    'rx.trace_worker',
     'rx.trace_cache',
+    'rx.log',
     'rx.analyzer',
     'rx.regex',
     'rx.web',
@@ -58,6 +61,7 @@ hiddenimports = [
     'click',
     'sh',
     'httpx',
+    'structlog',
 ]
 
 a = Analysis(

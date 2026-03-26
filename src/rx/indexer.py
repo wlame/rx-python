@@ -8,7 +8,7 @@ Key behaviors:
 - With --analyze: Index ALL files with full analysis + anomaly detection
 """
 
-import logging
+import structlog
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -69,7 +69,7 @@ from rx.unified_index import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 class IndexResult:
@@ -120,12 +120,12 @@ class FileIndexer:
         filepath = os.path.abspath(filepath)
 
         if not os.path.isfile(filepath):
-            logger.warning(f'Not a file: {filepath}')
+            logger.warning("not_a_file", path=filepath)
             return None
 
         # Check if file is indexable (text or compressed text)
         if not is_indexable_file(filepath):
-            logger.debug(f'Skipping non-indexable file (binary/archive): {filepath}')
+            logger.debug("skipping_non_indexable_file", path=filepath, reason="binary_or_archive")
             return None
 
         try:
@@ -134,31 +134,34 @@ class FileIndexer:
 
             # Check if we should create an index at all
             if not should_create_index(file_size, self.analyze):
-                logger.debug(f'Skipping small file without --analyze: {filepath}')
+                logger.debug("skipping_small_file", path=filepath, reason="no_analyze_flag")
                 return None
 
             # Check for valid cached index
             if not self.force:
                 cached = load_index(filepath)
                 if cached and not needs_rebuild(filepath, cached, self.analyze):
-                    logger.debug(f'Using cached index: {filepath}')
+                    logger.debug("using_cached_index", path=filepath)
                     return cached
 
             # Build new index
-            logger.debug(f'[INDEX] Starting index build for {filepath} ({file_size:,} bytes)')
+            logger.debug("starting_index_build", path=filepath, file_size=file_size)
             start_time = time()
             idx = self._build_index(filepath, stat)
             idx.build_time_seconds = time() - start_time
 
             # Log build summary
             logger.debug(
-                f'[INDEX] Completed {filepath}: '
-                f'{idx.line_count or 0:,} lines in {idx.build_time_seconds:.2f}s'
+                "index_build_completed",
+                path=filepath,
+                line_count=idx.line_count or 0,
+                build_time_seconds=round(idx.build_time_seconds, 2),
             )
             if idx.anomalies:
                 logger.debug(
-                    f'[INDEX] Anomalies found: {len(idx.anomalies)} '
-                    f'(summary: {idx.anomaly_summary})'
+                    "anomalies_found",
+                    count=len(idx.anomalies),
+                    summary=idx.anomaly_summary,
                 )
 
             # Save to cache
@@ -167,7 +170,7 @@ class FileIndexer:
             return idx
 
         except Exception as e:
-            logger.error(f'Failed to index {filepath}: {e}')
+            logger.error("index_failed", path=filepath, error=str(e))
             return None
 
     def index_paths(
@@ -211,8 +214,11 @@ class FileIndexer:
             return result
 
         logger.debug(
-            f'[INDEX] Processing {len(files_to_process)} files with {max_workers} workers '
-            f'(analyze={self.analyze}, force={self.force})'
+            "processing_files",
+            file_count=len(files_to_process),
+            max_workers=max_workers,
+            analyze=self.analyze,
+            force=self.force,
         )
 
         # Process files in parallel
@@ -228,27 +234,33 @@ class FileIndexer:
                     if idx:
                         result.indexed.append(idx)
                         logger.debug(
-                            f'[INDEX] [{completed_count}/{len(files_to_process)}] '
-                            f'Indexed: {filepath}'
+                            "file_indexed",
+                            path=filepath,
+                            progress=f"{completed_count}/{len(files_to_process)}",
                         )
                     else:
                         result.skipped.append(filepath)
                         logger.debug(
-                            f'[INDEX] [{completed_count}/{len(files_to_process)}] '
-                            f'Skipped: {filepath}'
+                            "file_skipped",
+                            path=filepath,
+                            progress=f"{completed_count}/{len(files_to_process)}",
                         )
                 except Exception as e:
                     result.errors.append((filepath, str(e)))
                     logger.debug(
-                        f'[INDEX] [{completed_count}/{len(files_to_process)}] '
-                        f'Error: {filepath}: {e}'
+                        "file_index_error",
+                        path=filepath,
+                        error=str(e),
+                        progress=f"{completed_count}/{len(files_to_process)}",
                     )
 
         result.total_time = time() - start_time
         logger.debug(
-            f'[INDEX] Completed: {len(result.indexed)} indexed, '
-            f'{len(result.skipped)} skipped, {len(result.errors)} errors '
-            f'in {result.total_time:.2f}s'
+            "index_paths_completed",
+            indexed_count=len(result.indexed),
+            skipped_count=len(result.skipped),
+            error_count=len(result.errors),
+            total_time_seconds=round(result.total_time, 2),
         )
         return result
 
@@ -349,7 +361,7 @@ class FileIndexer:
                 idx.line_ending = build_result.line_ending
 
         except Exception as e:
-            logger.warning(f'Failed to build line index for {filepath}: {e}')
+            logger.warning("line_index_build_failed", path=filepath, error=str(e))
 
         # Run anomaly detection if analyze mode
         if self.analyze and self.detectors:
@@ -395,7 +407,7 @@ class FileIndexer:
                 idx.line_length_max_byte_offset = comp_idx.get('line_length_max_byte_offset')
 
         except Exception as e:
-            logger.warning(f'Failed to build compressed index for {filepath}: {e}')
+            logger.warning("compressed_index_build_failed", path=filepath, error=str(e))
 
         # Run anomaly detection if analyze mode (FileAnalyzer handles decompression)
         if self.analyze and self.detectors:
@@ -428,7 +440,7 @@ class FileIndexer:
                     idx.compression_ratio = idx.decompressed_size_bytes / idx.source_size_bytes
 
         except Exception as e:
-            logger.warning(f'Failed to build seekable zstd index: {e}')
+            logger.warning("seekable_zstd_index_build_failed", error=str(e))
 
     def _run_anomaly_detection(self, filepath: str, idx: UnifiedFileIndex) -> None:
         """Run anomaly detection on a file.
@@ -443,8 +455,8 @@ class FileIndexer:
         try:
             from rx.analyzer import FileAnalyzer
 
-            logger.debug(f'[ANALYZE] Starting anomaly detection for {filepath}')
-            logger.debug(f'[ANALYZE] Using {len(self.detectors)} detectors: {[d.name for d in self.detectors]}')
+            logger.debug("starting_anomaly_detection", path=filepath)
+            logger.debug("anomaly_detectors", count=len(self.detectors), names=[d.name for d in self.detectors])
             analyze_start = time()
 
             analyzer = FileAnalyzer(
@@ -457,8 +469,11 @@ class FileIndexer:
             analyze_time = time() - analyze_start
 
             logger.debug(
-                f'[ANALYZE] Completed {filepath} in {analyze_time:.2f}s: '
-                f'{result.line_count:,} lines, {len(result.anomalies)} anomalies'
+                "anomaly_detection_completed",
+                path=filepath,
+                duration_seconds=round(analyze_time, 2),
+                line_count=result.line_count,
+                anomaly_count=len(result.anomalies),
             )
 
             # Copy anomalies to unified index, fixing line numbers from offsets
@@ -489,7 +504,7 @@ class FileIndexer:
                 idx.anomaly_summary = result.anomaly_summary
 
         except Exception as e:
-            logger.warning(f'Anomaly detection failed for {filepath}: {e}')
+            logger.warning("anomaly_detection_failed", path=filepath, error=str(e))
 
     def _offset_to_line(self, offset: int, line_index: list[list[int]]) -> int:
         """Convert byte offset to line number using binary search on line_index.

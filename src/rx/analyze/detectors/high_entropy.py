@@ -1,14 +1,15 @@
 """High entropy detector for secrets and tokens."""
 
-import logging
 import math
 import re
 from collections import Counter
 
+import structlog
+
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -28,7 +29,7 @@ class HighEntropyDetector(AnomalyDetector):
         self._filepath = filepath
         self._detection_count = 0
         self._detection_types: dict[str, int] = {}
-        logger.debug(f'[high_entropy] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     # Minimum length of high-entropy substring to flag
     MIN_TOKEN_LENGTH = 32

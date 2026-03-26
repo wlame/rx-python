@@ -1,12 +1,13 @@
 """Error keyword detector."""
 
-import logging
 import re
+
+import structlog
 
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -22,7 +23,7 @@ class ErrorKeywordDetector(AnomalyDetector):
         self._filepath = filepath
         self._detection_count = 0
         self._keyword_counts: dict[str, int] = {}
-        logger.debug(f'[error_keyword] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     # Keywords with their severity scores
     ERROR_KEYWORDS = [

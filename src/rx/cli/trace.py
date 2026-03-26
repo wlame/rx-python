@@ -436,6 +436,9 @@ def trace_command(
         from rx import parse_json
 
         importlib.reload(parse_json)
+
+        from rx.log import configure_logging
+        configure_logging(level='DEBUG')
         click.echo('Debug mode enabled - will create .debug_* files', err=True)
 
     if final_paths and final_regexps:

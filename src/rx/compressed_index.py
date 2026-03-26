@@ -14,7 +14,7 @@ Index Structure:
 """
 
 import hashlib
-import logging
+import structlog
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -28,7 +28,7 @@ from rx.compression import (
 from rx.utils import get_rx_cache_dir
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Line sampling interval for building line index
 # We store line number -> decompressed byte offset for every Nth line
@@ -107,7 +107,7 @@ def build_compressed_index(
     if compression_format == CompressionFormat.NONE:
         raise ValueError(f'File is not compressed: {source_path}')
 
-    logger.info(f'Building compressed index for {source_path}')
+    logger.info("building_compressed_index", source_path=str(source_path))
     start_time = time.time()
 
     # Get source file metadata
@@ -237,9 +237,12 @@ def build_compressed_index(
         line_length_p99 = 0
 
     logger.info(
-        f'Built index for {source_path}: {total_lines} lines, '
-        f'{decompressed_size} bytes decompressed, {len(line_index)} checkpoints, '
-        f'{elapsed:.2f}s'
+        "compressed_index_built",
+        source_path=str(source_path),
+        total_lines=total_lines,
+        decompressed_size=decompressed_size,
+        checkpoints=len(line_index),
+        elapsed_seconds=round(elapsed, 2),
     )
 
     index_data = {
@@ -344,8 +347,12 @@ def get_decompressed_lines(
     checkpoint_line, checkpoint_offset = find_nearest_checkpoint(line_index, start_line)
 
     logger.debug(
-        f'Getting lines {start_line}-{start_line + count - 1} from {source_path}, '
-        f'starting from checkpoint line {checkpoint_line} at offset {checkpoint_offset}'
+        "getting_decompressed_lines",
+        start_line=start_line,
+        end_line=start_line + count - 1,
+        source_path=str(source_path),
+        checkpoint_line=checkpoint_line,
+        checkpoint_offset=checkpoint_offset,
     )
 
     # Decompress from beginning (we can't seek in compressed stream without special tools)

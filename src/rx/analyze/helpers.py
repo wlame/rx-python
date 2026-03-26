@@ -1,11 +1,12 @@
 """Helper classes for memory-efficient anomaly collection."""
 
 import heapq
-import logging
 from collections import deque
 
+import structlog
 
-logger = logging.getLogger(__name__)
+
+logger = structlog.get_logger()
 
 
 class BoundedAnomalyHeap:
@@ -126,7 +127,7 @@ class SparseLineOffsets:
                 self._offsets[line_num] = off
                 return
         # If not found, it's a programming error but don't crash
-        logger.warning(f'Line {line_num} not found in recent window for offset tracking')
+        logger.warning("Line not found in recent window for offset tracking", line_num=line_num)
 
     def get(self, line_num: int, default: int = 0) -> int:
         """Get the byte offset for a line number."""

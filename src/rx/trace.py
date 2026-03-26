@@ -7,7 +7,7 @@ Coordinates multi-file, multi-pattern search using ripgrep. Delegates to:
 Public API: parse_paths(), HookCallbacks, identify_matching_patterns, DEBUG_MODE.
 """
 
-import logging
+import structlog
 import os
 import subprocess
 import time
@@ -38,7 +38,7 @@ from rx.unified_index import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 # NOTE: process_compressed_file, process_seekable_zstd_frame_batch, and
@@ -103,9 +103,9 @@ def parse_multiple_files_multipattern(
             error_msg = test_proc.stderr.decode('utf-8').strip()
             raise RuntimeError(f'Invalid regex pattern: {error_msg}')
 
-    logger.info(f'[PARSE_JSON] Parsing {len(filepaths)} files with {len(pattern_ids)} patterns (JSON mode)')
+    logger.info("parsing_files", file_count=len(filepaths), pattern_count=len(pattern_ids), mode="json")
     if context_before > 0 or context_after > 0:
-        logger.info(f'[PARSE_JSON] Context requested: {context_before} before, {context_after} after')
+        logger.info("context_requested", before=context_before, after=context_after)
 
     # Create reverse mapping: filepath -> file_id
     filepath_to_id = {v: k for k, v in file_ids.items()}
@@ -138,28 +138,30 @@ def parse_multiple_files_multipattern(
                 cache_info = get_compressed_cache_info(filepath, patterns_list, rg_extra_args)
                 if cache_info is not None:
                     logger.info(
-                        f'[PARSE_JSON] Seekable zstd cache hit for {filepath} '
-                        f'({cache_info["match_count"]} matches in {len(cache_info["frames_with_matches"])} frames)'
+                        "seekable_zstd_cache_hit",
+                        filepath=filepath,
+                        match_count=cache_info["match_count"],
+                        frame_count=len(cache_info["frames_with_matches"]),
                     )
                     seekable_zstd_cached.append((filepath, cache_info, file_size))
                     prom.trace_cache_hits_total.inc()
                     continue
 
             seekable_zstd_files.append((filepath, file_size))
-            logger.info(f'[PARSE_JSON] Detected seekable zstd file: {filepath}')
+            logger.info("detected_seekable_zstd_file", filepath=filepath)
             continue
 
         # Check if file is compressed
         if is_compressed(filepath):
             compressed_files.append((filepath, file_size))
-            logger.info(f'[PARSE_JSON] Detected compressed file: {filepath}')
+            logger.info("detected_compressed_file", filepath=filepath)
             continue
 
         # Check cache for large files (if cache enabled)
         if use_cache and file_size >= large_file_threshold:
             cached_matches = get_cached_matches(filepath, patterns_list, rg_extra_args)
             if cached_matches is not None:
-                logger.info(f'[PARSE_JSON] Cache hit for {filepath} ({len(cached_matches)} matches)')
+                logger.info("cache_hit", filepath=filepath, match_count=len(cached_matches))
                 cached_files.append((filepath, cached_matches, file_size))
                 continue
 
@@ -179,9 +181,9 @@ def parse_multiple_files_multipattern(
             if file_id:
                 file_chunk_counts[file_id] = len(file_tasks)
                 if len(file_tasks) > 1:
-                    logger.info(f'[PARSE_JSON] {filepath} split into {len(file_tasks)} chunks for parallel processing')
+                    logger.info("file_split_into_chunks", filepath=filepath, chunk_count=len(file_tasks))
         except Exception as e:
-            logger.warning(f'[PARSE_JSON] Skipping {filepath}: {e}')
+            logger.warning("skipping_file", filepath=filepath, error=str(e))
 
     # Mark cached files with chunk count of 0 (served from cache)
     for filepath, _, _ in cached_files:
@@ -207,9 +209,13 @@ def parse_multiple_files_multipattern(
             file_chunk_counts[file_id] = 1  # Compressed files are single-threaded
 
     logger.info(
-        f'[PARSE_JSON] Created {len(all_tasks)} tasks from {len(files_to_process)} files '
-        f'({len(cached_files)} cached, {len(seekable_zstd_cached)} seekable zstd cached, '
-        f'{len(seekable_zstd_files)} seekable zstd to process, {len(compressed_files)} compressed)'
+        "tasks_created",
+        task_count=len(all_tasks),
+        file_count=len(files_to_process),
+        cached_count=len(cached_files),
+        seekable_zstd_cached_count=len(seekable_zstd_cached),
+        seekable_zstd_count=len(seekable_zstd_files),
+        compressed_count=len(compressed_files),
     )
 
     # Track parallel tasks created
@@ -255,10 +261,10 @@ def parse_multiple_files_multipattern(
                         ).model_dump()
                         hooks.on_match_found(payload)
                     except Exception as e:
-                        logger.warning(f'[PARSE_JSON] on_match_found hook failed: {e}')
+                        logger.warning("on_match_found_hook_failed", error=str(e))
 
             except Exception as e:
-                logger.warning(f'[PARSE_JSON] Failed to reconstruct match from cache: {e}')
+                logger.warning("cache_match_reconstruction_failed", error=str(e))
 
         reconstruction_time = time.time() - reconstruction_start
         prom.trace_cache_reconstruction_seconds.observe(reconstruction_time)
@@ -275,16 +281,16 @@ def parse_multiple_files_multipattern(
                 ).model_dump()
                 hooks.on_file_scanned(payload)
             except Exception as e:
-                logger.warning(f'[PARSE_JSON] on_file_scanned hook failed: {e}')
+                logger.warning("on_file_scanned_hook_failed", error=str(e))
 
         # Check max_results after cache reconstruction
         if max_results and len(matches) >= max_results:
-            logger.info(f'[PARSE_JSON] Reached max_results={max_results} from cache')
+            logger.info("max_results_reached_from_cache", max_results=max_results)
 
     # Process seekable zstd cached files - reconstruct matches from decompressed frames
     for filepath, cache_info, file_size in seekable_zstd_cached:
         if max_results and len(matches) >= max_results:
-            logger.info(f'[PARSE_JSON] Reached max_results={max_results}, skipping remaining seekable zstd cached')
+            logger.info("max_results_reached_skipping_seekable_zstd_cached", max_results=max_results)
             break
 
         file_id = filepath_to_id.get(filepath, 'f?')
@@ -326,7 +332,7 @@ def parse_multiple_files_multipattern(
                         ).model_dump()
                         hooks.on_match_found(payload)
                     except Exception as e:
-                        logger.warning(f'[PARSE_JSON] on_match_found hook failed: {e}')
+                        logger.warning("on_match_found_hook_failed", error=str(e))
 
             reconstruction_time = time.time() - reconstruction_start
 
@@ -342,20 +348,23 @@ def parse_multiple_files_multipattern(
                     ).model_dump()
                     hooks.on_file_scanned(payload)
                 except Exception as e:
-                    logger.warning(f'[PARSE_JSON] on_file_scanned hook failed: {e}')
+                    logger.warning("on_file_scanned_hook_failed", error=str(e))
 
             logger.info(
-                f'[PARSE_JSON] Seekable zstd cache reconstruction for {filepath}: '
-                f'{len(reconstructed_matches)} matches from {len(frames_with_matches)} frames in {reconstruction_time:.3f}s'
+                "seekable_zstd_cache_reconstructed",
+                filepath=filepath,
+                match_count=len(reconstructed_matches),
+                frame_count=len(frames_with_matches),
+                elapsed_seconds=round(reconstruction_time, 3),
             )
 
         except Exception as e:
-            logger.error(f'[PARSE_JSON] Failed to reconstruct seekable zstd cache for {filepath}: {e}')
+            logger.error("seekable_zstd_cache_reconstruction_failed", filepath=filepath, error=str(e))
 
     # Process compressed files (sequential decompression pipeline)
     for filepath, file_size in compressed_files:
         if max_results and len(matches) >= max_results:
-            logger.info(f'[PARSE_JSON] Reached max_results={max_results}, skipping remaining compressed files')
+            logger.info("max_results_reached_skipping_compressed", max_results=max_results)
             break
 
         file_id = filepath_to_id.get(filepath, 'f?')
@@ -410,7 +419,7 @@ def parse_multiple_files_multipattern(
                             ).model_dump()
                             hooks.on_match_found(payload)
                         except Exception as e:
-                            logger.warning(f'[PARSE_JSON] on_match_found hook failed: {e}')
+                            logger.warning("on_match_found_hook_failed", error=str(e))
 
             # Collect context lines with file_id association
             for ctx_line in compressed_context:
@@ -428,17 +437,17 @@ def parse_multiple_files_multipattern(
                     ).model_dump()
                     hooks.on_file_scanned(payload)
                 except Exception as e:
-                    logger.warning(f'[PARSE_JSON] on_file_scanned hook failed: {e}')
+                    logger.warning("on_file_scanned_hook_failed", error=str(e))
 
-            logger.info(f'[PARSE_JSON] Compressed file {filepath}: {len(compressed_matches)} matches in {elapsed:.3f}s')
+            logger.info("compressed_file_processed", filepath=filepath, match_count=len(compressed_matches), elapsed_seconds=round(elapsed, 3))
 
         except Exception as e:
-            logger.error(f'[PARSE_JSON] Failed to process compressed file {filepath}: {e}')
+            logger.error("compressed_file_processing_failed", filepath=filepath, error=str(e))
 
     # Process seekable zstd files (parallel frame decompression)
     for filepath, file_size in seekable_zstd_files:
         if max_results and len(matches) >= max_results:
-            logger.info(f'[PARSE_JSON] Reached max_results={max_results}, skipping remaining seekable zstd files')
+            logger.info("max_results_reached_skipping_seekable_zstd", max_results=max_results)
             break
 
         file_id = filepath_to_id.get(filepath, 'f?')
@@ -500,7 +509,7 @@ def parse_multiple_files_multipattern(
                             ).model_dump()
                             hooks.on_match_found(payload)
                         except Exception as e:
-                            logger.warning(f'[PARSE_JSON] on_match_found hook failed: {e}')
+                            logger.warning("on_match_found_hook_failed", error=str(e))
 
             # Collect context lines with file_id association
             for ctx_line in seekable_context:
@@ -518,10 +527,13 @@ def parse_multiple_files_multipattern(
                     ).model_dump()
                     hooks.on_file_scanned(payload)
                 except Exception as e:
-                    logger.warning(f'[PARSE_JSON] on_file_scanned hook failed: {e}')
+                    logger.warning("on_file_scanned_hook_failed", error=str(e))
 
             logger.info(
-                f'[PARSE_JSON] Seekable zstd file {filepath}: {len(seekable_matches)} matches in {elapsed:.3f}s'
+                "seekable_zstd_file_processed",
+                filepath=filepath,
+                match_count=len(seekable_matches),
+                elapsed_seconds=round(elapsed, 3),
             )
 
             # Cache results for seekable zstd files (if cache enabled)
@@ -536,11 +548,13 @@ def parse_multiple_files_multipattern(
                 cache_path = get_trace_cache_path(filepath, patterns_list, rg_extra_args)
                 save_trace_cache(cache_data, cache_path)
                 logger.info(
-                    f'[PARSE_JSON] Wrote seekable zstd trace cache for {filepath} ({len(matches_for_cache)} matches)'
+                    "seekable_zstd_cache_written",
+                    filepath=filepath,
+                    match_count=len(matches_for_cache),
                 )
 
         except Exception as e:
-            logger.error(f'[PARSE_JSON] Failed to process seekable zstd file {filepath}: {e}')
+            logger.error("seekable_zstd_file_processing_failed", filepath=filepath, error=str(e))
 
     # Track per-file statistics for hooks and caching
     file_stats: dict[str, dict] = {}  # file_id -> {start_time, matches_count, file_size, ...}
@@ -633,7 +647,7 @@ def parse_multiple_files_multipattern(
                                     ).model_dump()
                                     hooks.on_match_found(payload)
                                 except Exception as e:
-                                    logger.warning(f'[PARSE_JSON] on_match_found hook failed: {e}')
+                                    logger.warning("on_match_found_hook_failed", error=str(e))
 
                     # Collect context lines with file_id association
                     for ctx_line in context_lines:
@@ -661,23 +675,26 @@ def parse_multiple_files_multipattern(
                                     ).model_dump()
                                     hooks.on_file_scanned(payload)
                                 except Exception as e:
-                                    logger.warning(f'[PARSE_JSON] on_file_scanned hook failed: {e}')
+                                    logger.warning("on_file_scanned_hook_failed", error=str(e))
 
                     logger.debug(
-                        f'[PARSE_JSON] Task {task.task_id} ({task.filepath}) contributed '
-                        f'{len(match_dicts)} matches, {len(context_lines)} context lines'
+                        "task_completed",
+                        task_id=task.task_id,
+                        filepath=task.filepath,
+                        match_count=len(match_dicts),
+                        context_line_count=len(context_lines),
                     )
 
                     # Check max_results
                     if max_results is not None and len(matches) >= max_results:
-                        logger.info(f'[PARSE_JSON] Reached max_results={max_results}, cancelling remaining')
+                        logger.info("max_results_reached_cancelling", max_results=max_results)
                         max_results_hit = True
                         for f in future_to_task:
                             f.cancel()
                         break
 
                 except Exception as e:
-                    logger.error(f'[PARSE_JSON] Task failed: {e}')
+                    logger.error("task_failed", error=str(e))
 
     # Write cache for large files that completed successfully
     # Only cache if no max_results limit was hit (partial scans shouldn't be cached)
@@ -697,7 +714,9 @@ def parse_multiple_files_multipattern(
                 cache_path = get_trace_cache_path(filepath, patterns_list, rg_extra_args)
                 save_trace_cache(cache_data, cache_path)
                 logger.info(
-                    f'[PARSE_JSON] Wrote trace cache for {filepath} ({len(stats["matches_for_cache"])} matches)'
+                    "trace_cache_written",
+                    filepath=filepath,
+                    match_count=len(stats['matches_for_cache']),
                 )
 
     # Sort matches by file, offset, then pattern
@@ -848,8 +867,10 @@ def parse_multiple_files_multipattern(
             context_dict[composite_key] = [matched_context_line]
 
     logger.info(
-        f'[PARSE_JSON] Completed: {len(matches)} matches, '
-        f'{len(context_dict)} context groups, total worker time: {total_time:.3f}s'
+        "parsing_completed",
+        match_count=len(matches),
+        context_group_count=len(context_dict),
+        total_worker_time_seconds=round(total_time, 3),
     )
 
     return matches, context_dict, file_chunk_counts
@@ -892,7 +913,7 @@ def parse_paths(
     # Update hooks with pattern info if provided
     if hooks:
         hooks.patterns = pattern_ids
-    logger.info(f'[PARSE_JSON] Processing {len(pattern_ids)} pattern(s) across {len(paths)} path(s)')
+    logger.info("processing_paths", pattern_count=len(pattern_ids), path_count=len(paths))
 
     # Collect all files to parse from all provided paths
     all_files_to_parse = []
@@ -904,26 +925,26 @@ def parse_paths(
             raise FileNotFoundError(f'Path not found: {path}')
 
         if os.path.isdir(path):
-            logger.info(f"[PARSE_JSON] Path '{path}' is directory, scanning for text files...")
+            logger.info("scanning_directory", path=path)
             text_files, skipped_files = scan_directory_for_text_files(path)
 
             if text_files:
                 all_files_to_parse.extend(text_files)
                 all_scanned_dirs.append(path)
             all_skipped_files.extend(skipped_files)
-            logger.info(f"[PARSE_JSON] Found {len(text_files)} text file(s) in '{path}'")
+            logger.info("text_files_found", path=path, file_count=len(text_files))
         else:
             # Single file - validate and add to list
             try:
                 validate_file(path)
                 all_files_to_parse.append(path)
-                logger.info(f"[PARSE_JSON] Added file '{path}'")
+                logger.info("file_added", path=path)
             except ValueError as e:
-                logger.warning(f"[PARSE_JSON] Skipping invalid file '{path}': {e}")
+                logger.warning("skipping_invalid_file", path=path, error=str(e))
                 all_skipped_files.append(path)
 
     if not all_files_to_parse:
-        logger.warning('[PARSE_JSON] No valid files found across all paths')
+        logger.warning("no_valid_files_found")
         return ParseResult(
             patterns=pattern_ids,
             files={},
@@ -944,7 +965,7 @@ def parse_paths(
         hooks.files = file_ids
 
     # Parse all files
-    logger.info(f'[PARSE_JSON] Parsing {len(all_files_to_parse)} file(s) with {len(pattern_ids)} pattern(s)')
+    logger.info("parsing_all_files", file_count=len(all_files_to_parse), pattern_count=len(pattern_ids))
     matches, context_dict, file_chunk_counts = parse_multiple_files_multipattern(
         all_files_to_parse,
         pattern_ids,

@@ -29,6 +29,7 @@ dependencies = [
     "zstandard>=0.23.0",
     "pytest>=8.4.2",
     "drain3>=0.9.11",
+    "structlog>=24.1.0",
 ]
 
 [project.urls]

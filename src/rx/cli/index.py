@@ -8,6 +8,7 @@ import sys
 import click
 
 from rx.indexer import FileIndexer
+from rx.log import configure_logging
 from rx.unified_index import delete_index, load_index
 
 
@@ -18,26 +19,14 @@ def _setup_logging(debug: bool = False):
         debug: If True, force DEBUG level logging with detailed format
     """
     if debug:
-        log_level = logging.DEBUG
-        log_format = '%(asctime)s.%(msecs)03d %(name)s [%(levelname)s] %(message)s'
+        log_level = 'DEBUG'
     else:
-        log_level_str = os.environ.get('RX_LOG_LEVEL', 'WARNING').upper()
-        log_level = getattr(logging, log_level_str, logging.WARNING)
-        log_format = '%(asctime)s %(name)s [%(levelname)s] %(message)s'
+        log_level = os.environ.get('RX_LOG_LEVEL', 'WARNING').upper()
 
-    # Configure root logger for rx modules
-    logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        datefmt='%H:%M:%S',
-        stream=sys.stderr,
-    )
-
-    # Set level for rx modules specifically
-    logging.getLogger('rx').setLevel(log_level)
+    configure_logging(level=log_level)
 
     # Suppress drain3 INFO messages unless DEBUG is requested
-    if log_level > logging.DEBUG:
+    if log_level != 'DEBUG':
         logging.getLogger('drain3').setLevel(logging.WARNING)
 
 

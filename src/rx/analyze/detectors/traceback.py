@@ -1,12 +1,13 @@
 """Traceback detector for stack traces from multiple languages."""
 
-import logging
 import re
+
+import structlog
 
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -22,7 +23,7 @@ class TracebackDetector(AnomalyDetector):
         self._filepath = filepath
         self._detection_count = 0
         self._merge_count = 0
-        logger.debug(f'[traceback] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     # Patterns for detecting start of tracebacks
     TRACEBACK_START_PATTERNS = {

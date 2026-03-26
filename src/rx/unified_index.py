@@ -13,7 +13,7 @@ Cache behavior:
 import bisect
 import hashlib
 import json
-import logging
+import structlog
 import os
 import statistics
 import time
@@ -26,7 +26,7 @@ from rx.models import UnifiedFileIndex
 from rx.utils import get_rx_cache_dir
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Cache format version - increment when format changes
 UNIFIED_INDEX_VERSION = 2
@@ -331,7 +331,7 @@ def load_index(source_path: str) -> UnifiedFileIndex | None:
     cache_path = get_index_path(source_path)
 
     if not cache_path.exists():
-        logger.debug(f'No cache found for {source_path}')
+        logger.debug("cache_not_found", path=source_path)
         return None
 
     try:
@@ -340,21 +340,21 @@ def load_index(source_path: str) -> UnifiedFileIndex | None:
 
         # Check version
         if data.get('version') != UNIFIED_INDEX_VERSION:
-            logger.debug(f'Cache version mismatch for {source_path}')
+            logger.debug("cache_version_mismatch", path=source_path)
             return None
 
         index = UnifiedFileIndex(**data)
 
         # Validate against source file
         if not is_index_valid(source_path, index):
-            logger.debug(f'Cache invalid (file changed) for {source_path}')
+            logger.debug("cache_invalid", path=source_path, reason="file_changed")
             return None
 
-        logger.debug(f'Cache hit for {source_path}')
+        logger.debug("cache_hit", path=source_path)
         return index
 
     except (json.JSONDecodeError, ValueError, KeyError) as e:
-        logger.warning(f'Failed to load cache for {source_path}: {e}')
+        logger.warning("cache_load_failed", path=source_path, error=str(e))
         return None
 
 
@@ -380,13 +380,16 @@ def save_index(index: UnifiedFileIndex) -> bool:
 
         cache_size = cache_path.stat().st_size
         logger.info(
-            f'Saved cache for {index.source_path} '
-            f'({cache_size:,} bytes, {anomaly_count} anomalies, {line_index_count} checkpoints)'
+            "cache_saved",
+            path=index.source_path,
+            cache_size=cache_size,
+            anomaly_count=anomaly_count,
+            checkpoint_count=line_index_count,
         )
         return True
 
     except Exception as e:
-        logger.warning(f'Failed to save cache for {index.source_path}: {type(e).__name__}: {e}')
+        logger.warning("cache_save_failed", path=index.source_path, error=str(e), error_type=type(e).__name__)
         return False
 
 
@@ -404,11 +407,11 @@ def delete_index(source_path: str) -> bool:
     try:
         if cache_path.exists():
             cache_path.unlink()
-            logger.info(f'Deleted cache for {source_path}')
+            logger.info("cache_deleted", path=source_path)
             return True
         return False
     except OSError as e:
-        logger.warning(f'Failed to delete cache for {source_path}: {e}')
+        logger.warning("cache_delete_failed", path=source_path, error=str(e))
         return False
 
 
@@ -426,9 +429,9 @@ def clear_all_indexes() -> int:
             cache_file.unlink()
             count += 1
         except OSError as e:
-            logger.warning(f'Failed to delete {cache_file}: {e}')
+            logger.warning("cache_file_delete_failed", path=str(cache_file), error=str(e))
 
-    logger.info(f'Cleared {count} index cache files')
+    logger.info("cache_cleared", deleted_count=count)
     return count
 
 
@@ -536,7 +539,7 @@ def calculate_exact_offset_for_line(filename: str, target_line: int, index: Unif
                 # Reached EOF before finding target line
                 return -1
         except OSError as e:
-            logger.error(f'Failed to read file {filename}: {e}')
+            logger.error("file_read_failed", path=filename, error=str(e))
             return -1
 
     # No index - check if file is small enough to read
@@ -562,7 +565,7 @@ def calculate_exact_offset_for_line(filename: str, target_line: int, index: Unif
             # Target line beyond EOF
             return -1
     except OSError as e:
-        logger.error(f'Failed to process file {filename}: {e}')
+        logger.error("file_process_failed", path=filename, error=str(e))
         return -1
 
 
@@ -616,7 +619,7 @@ def calculate_exact_line_for_offset(filename: str, target_offset: int, index: Un
                 # Reached EOF
                 return -1
         except OSError as e:
-            logger.error(f'Failed to read file {filename}: {e}')
+            logger.error("file_read_failed", path=filename, error=str(e))
             return -1
 
     # No index - check if file is small enough to read
@@ -645,7 +648,7 @@ def calculate_exact_line_for_offset(filename: str, target_offset: int, index: Un
             # EOF
             return -1
     except OSError as e:
-        logger.error(f'Failed to process file {filename}: {e}')
+        logger.error("file_process_failed", path=filename, error=str(e))
         return -1
 
 
@@ -735,7 +738,7 @@ def calculate_lines_for_offsets_batch(
                 current_line += 1
 
     except OSError as e:
-        logger.error(f'Failed to read file {filename}: {e}')
+        logger.error("file_read_failed", path=filename, error=str(e))
 
     return results
 
@@ -835,6 +838,6 @@ def calculate_line_info_for_offsets(
                 current_line += 1
 
     except OSError as e:
-        logger.error(f'Failed to read file {filename}: {e}')
+        logger.error("file_read_failed", path=filename, error=str(e))
 
     return results

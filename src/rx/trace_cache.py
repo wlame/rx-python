@@ -20,7 +20,7 @@ Compressed File Support:
 
 import hashlib
 import json
-import logging
+import structlog
 import os
 import re
 import time
@@ -36,7 +36,7 @@ from rx.unified_index import get_large_file_threshold_bytes
 from rx.utils import get_rx_cache_dir
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Constants
 TRACE_CACHE_VERSION = 2  # Bumped for compressed file support
@@ -126,21 +126,21 @@ def is_trace_cache_valid(source_path: str, patterns: list[str], rg_flags: list[s
 
         # Validate file metadata
         if cache_data.get('source_modified_at') != source_mtime:
-            logger.debug(f'Cache invalid: mtime mismatch for {source_path}')
+            logger.debug("cache_invalid_mtime_mismatch", source_path=source_path)
             return False
         if cache_data.get('source_size_bytes') != source_stat.st_size:
-            logger.debug(f'Cache invalid: size mismatch for {source_path}')
+            logger.debug("cache_invalid_size_mismatch", source_path=source_path)
             return False
 
         # Validate patterns hash
         expected_hash = compute_patterns_hash(patterns, rg_flags)
         if cache_data.get('patterns_hash') != expected_hash:
-            logger.debug(f'Cache invalid: patterns hash mismatch for {source_path}')
+            logger.debug("cache_invalid_patterns_hash_mismatch", source_path=source_path)
             return False
 
         return True
     except (OSError, json.JSONDecodeError, KeyError) as e:
-        logger.debug(f'Cache validation failed for {source_path}: {e}')
+        logger.debug("cache_validation_failed", source_path=source_path, error=str(e))
         return False
 
 
@@ -160,14 +160,14 @@ def load_trace_cache(cache_path: Path | str) -> dict | None:
 
         # Validate version
         if data.get('version') != TRACE_CACHE_VERSION:
-            logger.warning(f'Cache version mismatch: {data.get("version")} != {TRACE_CACHE_VERSION}')
+            logger.warning("cache_version_mismatch", cached_version=data.get('version'), expected_version=TRACE_CACHE_VERSION)
             prom.trace_cache_load_duration_seconds.observe(time.time() - start_time)
             return None
 
         prom.trace_cache_load_duration_seconds.observe(time.time() - start_time)
         return data
     except (OSError, json.JSONDecodeError) as e:
-        logger.debug(f'Failed to load trace cache {cache_path}: {e}')
+        logger.debug("trace_cache_load_failed", cache_path=str(cache_path), error=str(e))
         prom.trace_cache_load_duration_seconds.observe(time.time() - start_time)
         return None
 
@@ -189,10 +189,10 @@ def save_trace_cache(cache_data: dict, cache_path: Path | str) -> bool:
             json.dump(cache_data, f, indent=2)
 
         prom.trace_cache_writes_total.inc()
-        logger.info(f'Trace cache saved to {cache_path}')
+        logger.info("trace_cache_saved", cache_path=str(cache_path))
         return True
     except OSError as e:
-        logger.error(f'Failed to save trace cache {cache_path}: {e}')
+        logger.error("trace_cache_save_failed", cache_path=str(cache_path), error=str(e))
         return False
 
 
@@ -211,10 +211,10 @@ def delete_trace_cache(source_path: str, patterns: list[str], rg_flags: list[str
     try:
         if cache_path.exists():
             cache_path.unlink()
-            logger.info(f'Deleted trace cache for {source_path}')
+            logger.info("trace_cache_deleted", source_path=source_path)
         return True
     except OSError as e:
-        logger.error(f'Failed to delete trace cache {cache_path}: {e}')
+        logger.error("trace_cache_delete_failed", cache_path=str(cache_path), error=str(e))
         return False
 
 
@@ -245,7 +245,7 @@ def get_cached_matches(
         return None
 
     prom.trace_cache_hits_total.inc()
-    logger.info(f'Trace cache hit for {source_path} with {len(cache_data.get("matches", []))} matches')
+    logger.info("trace_cache_hit", source_path=source_path, match_count=len(cache_data.get('matches', [])))
     return cache_data.get('matches', [])
 
 
@@ -393,7 +393,7 @@ def reconstruct_match_data(
                 )
             )
     except re.error as e:
-        logger.debug(f'Failed to extract submatches for pattern {pattern}: {e}')
+        logger.debug("submatch_extraction_failed", pattern=pattern, error=str(e))
 
     # Build match dict in the same format as trace.py produces
     # For cached files, we know the absolute line number (it's the same as relative for complete scans)
@@ -547,7 +547,7 @@ def reconstruct_seekable_zstd_match(
                 )
             )
     except re.error as e:
-        logger.debug(f'Failed to extract submatches for pattern {pattern}: {e}')
+        logger.debug("submatch_extraction_failed", pattern=pattern, error=str(e))
 
     # Build match dict
     # For seekable zstd with index, we know the absolute line number
@@ -625,9 +625,9 @@ def reconstruct_seekable_zstd_matches(
         try:
             frame_data = decompress_frame(source_path, frame_idx)
             decompressed_frames[frame_idx] = frame_data
-            logger.debug(f'Decompressed frame {frame_idx} ({len(frame_data)} bytes)')
+            logger.debug("frame_decompressed", frame_index=frame_idx, size_bytes=len(frame_data))
         except Exception as e:
-            logger.warning(f'Failed to decompress frame {frame_idx}: {e}')
+            logger.warning("frame_decompression_failed", frame_index=frame_idx, error=str(e))
             decompressed_frames[frame_idx] = b''
 
     # Reconstruct each match
@@ -651,13 +651,16 @@ def reconstruct_seekable_zstd_matches(
             all_matches.append(match_dict)
             all_context_lines.extend(ctx_lines)
         except Exception as e:
-            logger.warning(f'Failed to reconstruct match: {e}')
+            logger.warning("match_reconstruction_failed", error=str(e))
 
     elapsed = time.time() - start_time
     prom.trace_cache_reconstruction_seconds.observe(elapsed)
     logger.info(
-        f'Reconstructed {len(all_matches)} matches from {len(frames_with_matches)} frames '
-        f'in {elapsed:.3f}s (seekable zstd cache hit)'
+        "matches_reconstructed",
+        match_count=len(all_matches),
+        frame_count=len(frames_with_matches),
+        elapsed_seconds=round(elapsed, 3),
+        source="seekable_zstd_cache",
     )
 
     return all_matches, all_context_lines
@@ -686,19 +689,19 @@ def should_cache_compressed_file(
     compressed_threshold = 1 * 1024 * 1024  # 1MB
 
     if file_size < compressed_threshold:
-        logger.debug(f'Compressed file too small for caching: {file_size} < {compressed_threshold}')
+        logger.debug("compressed_file_too_small_for_caching", file_size=file_size, threshold=compressed_threshold)
         prom.trace_cache_skip_total.inc()
         return False
 
     # Only cache complete scans (no max_results limit)
     if max_results is not None:
-        logger.debug(f'Skipping compressed cache: max_results={max_results} was set')
+        logger.debug("skipping_compressed_cache", reason="max_results_set", max_results=max_results)
         prom.trace_cache_skip_total.inc()
         return False
 
     # Only cache if scan completed successfully
     if not scan_completed:
-        logger.debug('Skipping compressed cache: scan did not complete')
+        logger.debug("skipping_compressed_cache", reason="scan_incomplete")
         prom.trace_cache_skip_total.inc()
         return False
 
@@ -724,19 +727,19 @@ def should_cache_file(
 
     # Only cache large files
     if file_size < threshold:
-        logger.debug(f'File too small for caching: {file_size} < {threshold}')
+        logger.debug("file_too_small_for_caching", file_size=file_size, threshold=threshold)
         prom.trace_cache_skip_total.inc()
         return False
 
     # Only cache complete scans (no max_results limit)
     if max_results is not None:
-        logger.debug(f'Skipping cache: max_results={max_results} was set')
+        logger.debug("skipping_cache", reason="max_results_set", max_results=max_results)
         prom.trace_cache_skip_total.inc()
         return False
 
     # Only cache if scan completed successfully
     if not scan_completed:
-        logger.debug('Skipping cache: scan did not complete')
+        logger.debug("skipping_cache", reason="scan_incomplete")
         prom.trace_cache_skip_total.inc()
         return False
 

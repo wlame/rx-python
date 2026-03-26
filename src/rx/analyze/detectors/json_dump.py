@@ -1,12 +1,13 @@
 """JSON dump detector."""
 
-import logging
 import re
+
+import structlog
 
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -31,7 +32,7 @@ class JsonDumpDetector(AnomalyDetector):
         self._filepath = filepath
         self._detection_count = 0
         self._merge_count = 0
-        logger.debug(f'[json_dump] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     # Patterns for JSON-like content - require proper JSON syntax
     # These patterns look for actual JSON structure, not just brackets

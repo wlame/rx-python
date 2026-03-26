@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import os
 import pathlib
 import platform
@@ -10,6 +9,7 @@ from pathlib import Path
 from time import time
 
 import anyio
+import structlog
 import psutil
 import sh
 from fastapi import FastAPI, HTTPException, Query
@@ -90,10 +90,8 @@ from rx.cli_command_builder import add_cli_command
 file_utils_module.prom = prom
 
 log_level_name = os.getenv('RX_LOG_LEVEL', 'INFO').upper()
-log_level = getattr(logging, log_level_name, logging.INFO)
-logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @asynccontextmanager
@@ -116,43 +114,40 @@ async def lifespan(app: FastAPI):
             search_roots = [search_root]
     app.state.search_roots = search_roots
     if len(search_roots) == 1:
-        logger.info(f'Search root: {search_roots[0]}')
+        logger.info("Search root configured", search_root=str(search_roots[0]))
     else:
-        logger.info(f'Search roots ({len(search_roots)}): {", ".join(str(r) for r in search_roots)}')
+        logger.info("Search roots configured", count=len(search_roots), search_roots=[str(r) for r in search_roots])
 
     # Startup: check for ripgrep
     try:
         rg = sh.Command('rg')
         rg_path = rg._path
-        logger.info(f'ripgrep found at: {rg_path}')
+        logger.info("ripgrep found", rg_path=str(rg_path))
         app.state.rg = rg
         app.state.rg_path = rg_path
     except sh.CommandNotFound:
         logger.warning(
-            'ripgrep not found. Install it:\n'
-            '  macOS: brew install ripgrep\n'
-            '  Ubuntu/Debian: apt install ripgrep\n'
-            '  Fedora: dnf install ripgrep\n'
-            '  Or use Docker image with ripgrep pre-installed'
+            "ripgrep not found",
+            hint="Install: brew install ripgrep (macOS), apt install ripgrep (Debian), dnf install ripgrep (Fedora)",
         )
         app.state.rg = None
         app.state.rg_path = None
 
     # Startup: initialize task manager for background tasks
     app.state.task_manager = TaskManager()
-    logger.info('Task manager initialized')
+    logger.info("Task manager initialized")
 
-    logger.info('Checking for frontend updates...')
+    logger.info("Checking for frontend updates")
     try:
         frontend_available = await ensure_frontend()
         if not frontend_available:
-            logger.error('Failed to ensure frontend availability - web UI may not work')
+            logger.error("Failed to ensure frontend availability", impact="web UI may not work")
             app.state.frontend_available = False
         else:
             app.state.frontend_available = True
-            logger.info('Frontend is ready')
+            logger.info("Frontend is ready")
     except Exception as e:
-        logger.error(f'Error during frontend check: {e}')
+        logger.error("Error during frontend check", error=str(e))
         app.state.frontend_available = False
 
     # Startup: schedule periodic task cleanup
@@ -161,7 +156,7 @@ async def lifespan(app: FastAPI):
             await asyncio.sleep(300)  # Every 5 minutes
             count = await app.state.task_manager.cleanup_old_tasks()
             if count > 0:
-                logger.info(f'Cleaned up {count} old tasks')
+                logger.info("Cleaned up old tasks", count=count)
 
     cleanup_task = asyncio.create_task(cleanup_tasks_periodically())
 
@@ -176,7 +171,7 @@ async def lifespan(app: FastAPI):
         pass
 
     # Shutdown: cleanup if needed
-    logger.info('Shutting down rx')
+    logger.info("Shutting down rx")
 
 
 app = FastAPI(
@@ -581,7 +576,7 @@ async def trace(
         prom.record_http_response('GET', '/v1/trace', 400)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f'Unexpected error: {e!s}')
+        logger.error("Unexpected error", error=str(e), endpoint="/v1/trace")
         prom.record_error('internal_error')
         prom.record_trace_request('error', 0, 0, 0, len(regexp), 0, 0)
         prom.record_http_response('GET', '/v1/trace', 500)
@@ -669,7 +664,7 @@ async def complexity(
 
         return result
     except Exception as e:
-        logger.error(f'Error analyzing regex complexity: {e!s}')
+        logger.error("Error analyzing regex complexity", error=str(e))
         prom.record_error('internal_error')
         prom.record_http_response('GET', '/v1/complexity', 500)
         raise HTTPException(status_code=500, detail=f'Internal error: {e!s}')
@@ -822,7 +817,7 @@ async def get_index(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f'Error getting index: {e!s}')
+        logger.error("Error getting index", error=str(e))
         prom.record_error('internal_error')
         prom.record_http_response('GET', '/v1/index', 500)
         raise HTTPException(status_code=500, detail=f'Internal error: {e!s}')
@@ -1532,7 +1527,7 @@ async def samples(
         prom.record_http_response('GET', '/v1/samples', 400)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f'Unexpected error: {e!s}')
+        logger.error("Unexpected error", error=str(e), endpoint="/v1/samples")
         prom.record_error('internal_error')
         num_items = len(parsed_values)
         prom.record_samples_request('error', 0, num_items, before, after)
@@ -1573,7 +1568,7 @@ async def run_compress_task(
 
     try:
         await task_manager.update_task(task_id, status=TaskStatus.RUNNING)
-        logger.info(f'[Task {task_id}] Starting compression of {normalized_path}')
+        logger.info("Starting compression", task_id=task_id, path=normalized_path)
 
         # Determine output path
         output_path = request.output_path
@@ -1602,7 +1597,7 @@ async def run_compress_task(
         index_built = False
         total_lines = None
         if request.build_index and result:
-            logger.info(f'[Task {task_id}] Building index for {output_path}')
+            logger.info("Building index", task_id=task_id, output_path=output_path)
             index_result = await anyio.to_thread.run_sync(
                 partial(
                     build_seekable_index,
@@ -1642,10 +1637,10 @@ async def run_compress_task(
             completed_at=datetime.now(UTC),
             result=task_result,
         )
-        logger.info(f'[Task {task_id}] Compression completed in {elapsed:.2f}s')
+        logger.info("Compression completed", task_id=task_id, elapsed_seconds=round(elapsed, 2))
 
     except Exception as e:
-        logger.error(f'[Task {task_id}] Compression failed: {e!s}')
+        logger.error("Compression failed", task_id=task_id, error=str(e))
         await task_manager.update_task(
             task_id,
             status=TaskStatus.FAILED,
@@ -1664,8 +1659,7 @@ async def run_index_task(
 
     try:
         await task_manager.update_task(task_id, status=TaskStatus.RUNNING)
-        analyze_msg = ' with analysis' if request.analyze else ''
-        logger.info(f'[Task {task_id}] Starting indexing{analyze_msg} of {normalized_path}')
+        logger.info("Starting indexing", task_id=task_id, path=normalized_path, analyze=request.analyze)
 
         # Use FileIndexer for unified indexing with optional analysis
         indexer = FileIndexer(analyze=request.analyze, force=request.force)
@@ -1680,7 +1674,7 @@ async def run_index_task(
                 f'File skipped: {normalized_path} ({file_size} bytes). '
                 f'Use analyze=true to index files below the size threshold.'
             )
-            logger.warning(f'[Task {task_id}] {error_msg}')
+            logger.warning("File skipped", task_id=task_id, path=normalized_path, file_size=file_size)
             await task_manager.update_task(
                 task_id,
                 status=TaskStatus.FAILED,
@@ -1707,10 +1701,10 @@ async def run_index_task(
             completed_at=datetime.now(UTC),
             result=task_result,
         )
-        logger.info(f'[Task {task_id}] Indexing completed in {index_result.build_time_seconds:.2f}s')
+        logger.info("Indexing completed", task_id=task_id, elapsed_seconds=round(index_result.build_time_seconds, 2))
 
     except Exception as e:
-        logger.error(f'[Task {task_id}] Indexing failed: {e!s}')
+        logger.error("Indexing failed", task_id=task_id, error=str(e))
         await task_manager.update_task(
             task_id,
             status=TaskStatus.FAILED,
@@ -1990,7 +1984,7 @@ def get_entry_metadata(entry_path: str, entry_name: str, is_dir: bool) -> dict:
                 result['is_indexed'] = False
 
     except (OSError, PermissionError) as e:
-        logger.debug(f'Error getting metadata for {entry_path}: {e}')
+        logger.debug("Error getting metadata", path=str(entry_path), error=str(e))
 
     return result
 

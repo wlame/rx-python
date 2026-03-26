@@ -8,13 +8,14 @@ for the file. This is useful for finding:
 - Corrupted or malformed log lines
 """
 
-import logging
 import re
+
+import structlog
 
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -59,7 +60,7 @@ class PrefixDeviationDetector(AnomalyDetector):
             try:
                 self._pattern = re.compile(prefix_regex)
             except re.error as e:
-                logger.warning(f'[prefix_deviation] {filepath}: Invalid regex pattern: {e}')
+                logger.warning("Invalid regex pattern", filepath=filepath, error=str(e))
                 self._pattern = None
 
     @property

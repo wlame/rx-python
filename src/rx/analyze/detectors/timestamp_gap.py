@@ -1,14 +1,15 @@
 """Timestamp gap detector."""
 
-import logging
 import os
 import re
 from datetime import datetime
 
+import structlog
+
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -66,7 +67,7 @@ class TimestampGapDetector(AnomalyDetector):
         self._format_lock_threshold = int(
             os.environ.get('RX_TIMESTAMP_FORMAT_LOCK_THRESHOLD', str(self.DEFAULT_FORMAT_LOCK_THRESHOLD))
         )
-        logger.debug(f'[timestamp_gap] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     @property
     def name(self) -> str:

@@ -14,7 +14,7 @@ Environment Variables:
 """
 
 import json
-import logging
+import structlog
 import os
 import shutil
 import tarfile
@@ -25,7 +25,7 @@ from pathlib import Path
 import httpx
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Configuration
 GITHUB_REPO = 'wlame/rx-viewer'
@@ -107,7 +107,7 @@ def validate_path_security(base_path: Path, requested_path: Path) -> bool:
         # Check if requested path starts with base path
         return str(requested_resolved).startswith(str(base_resolved))
     except Exception as e:
-        logger.error(f'Path validation error: {e}')
+        logger.error("path_validation_error", error=str(e))
         return False
 
 
@@ -135,7 +135,7 @@ class FrontendManager:
             self.cache_dir = cache_dir
         elif env_frontend_path:
             self.cache_dir = Path(env_frontend_path).expanduser()
-            logger.info(f'Using frontend path from RX_FRONTEND_PATH: {self.cache_dir}')
+            logger.info("using_frontend_path_override", cache_dir=str(self.cache_dir))
         else:
             self.cache_dir = DEFAULT_FRONTEND_CACHE_DIR
 
@@ -161,7 +161,7 @@ class FrontendManager:
                 data = json.load(f)
             return CacheMetadata.from_dict(data)
         except Exception as e:
-            logger.warning(f'Failed to read cache metadata: {e}')
+            logger.warning("cache_metadata_read_failed", error=str(e))
             return None
 
     def save_metadata(self, metadata: CacheMetadata):
@@ -191,19 +191,19 @@ class FrontendManager:
                 )
 
                 if response.status_code == 404:
-                    logger.warning(f'GitHub repository {self.repo} not found or has no releases')
+                    logger.warning("github_repo_not_found", repo=self.repo)
                     return None
 
                 if response.status_code != 200:
-                    logger.warning(f'GitHub API returned {response.status_code}')
+                    logger.warning("github_api_error", status_code=response.status_code)
                     return None
 
                 return response.json()
         except httpx.TimeoutException:
-            logger.warning(f'Timeout checking for frontend updates from {url}')
+            logger.warning("github_api_timeout", url=url)
             return None
         except Exception as e:
-            logger.warning(f'Failed to check for frontend updates: {e}')
+            logger.warning("github_api_check_failed", error=str(e))
             return None
 
     async def get_version_release_info(self, version: str) -> dict | None:
@@ -229,19 +229,19 @@ class FrontendManager:
                 )
 
                 if response.status_code == 404:
-                    logger.warning(f'Release {version} not found in {self.repo}')
+                    logger.warning("release_not_found", version=version, repo=self.repo)
                     return None
 
                 if response.status_code != 200:
-                    logger.warning(f'GitHub API returned {response.status_code}')
+                    logger.warning("github_api_error", status_code=response.status_code, version=version)
                     return None
 
                 return response.json()
         except httpx.TimeoutException:
-            logger.warning(f'Timeout checking for version {version}')
+            logger.warning("github_api_timeout", version=version)
             return None
         except Exception as e:
-            logger.warning(f'Failed to check for version {version}: {e}')
+            logger.warning("version_check_failed", version=version, error=str(e))
             return None
 
     def get_download_url_from_release(self, release: dict) -> str | None:
@@ -258,7 +258,7 @@ class FrontendManager:
             if asset['name'] == 'dist.tar.gz':
                 return asset['browser_download_url']
 
-        logger.error('No dist.tar.gz asset found in release')
+        logger.error("dist_tarball_not_found")
         return None
 
     def get_direct_download_url(self, version: str) -> str:
@@ -288,7 +288,7 @@ class FrontendManager:
         Returns:
             True if successful, False otherwise
         """
-        logger.info(f'Downloading frontend from {download_url}')
+        logger.info("downloading_frontend", url=download_url)
 
         try:
             # Download to temporary file
@@ -298,7 +298,7 @@ class FrontendManager:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, follow_redirects=True) as client:
                 async with client.stream('GET', download_url) as response:
                     if response.status_code != 200:
-                        logger.error(f'Download failed with status {response.status_code}')
+                        logger.error("download_failed", status_code=response.status_code)
                         return False
 
                     total_size = int(response.headers.get('content-length', 0))
@@ -311,9 +311,9 @@ class FrontendManager:
 
                             if total_size > 0 and downloaded % (100 * 1024) == 0:
                                 progress = (downloaded / total_size) * 100
-                                logger.debug(f'Download progress: {progress:.1f}%')
+                                logger.debug("download_progress", progress_percent=round(progress, 1))
 
-            logger.info(f'Downloaded {downloaded} bytes')
+            logger.info("download_complete", size_bytes=downloaded)
 
             # Clear existing frontend files (but keep metadata for now)
             for item in self.cache_dir.iterdir():
@@ -324,14 +324,14 @@ class FrontendManager:
                         shutil.rmtree(item)
 
             # Extract to cache directory
-            logger.info(f'Extracting to {self.cache_dir}')
+            logger.info("extracting_frontend", cache_dir=str(self.cache_dir))
 
             with tarfile.open(temp_file, 'r:gz') as tar:
                 # Security: verify paths don't escape cache dir
                 for member in tar.getmembers():
                     member_path = Path(self.cache_dir) / member.name
                     if not validate_path_security(self.cache_dir, member_path):
-                        logger.error(f'Unsafe path in archive: {member.name}')
+                        logger.error("unsafe_archive_path", member_name=member.name)
                         temp_file.unlink()
                         return False
 
@@ -363,11 +363,11 @@ class FrontendManager:
             )
             self.save_metadata(metadata)
 
-            logger.info(f'Frontend v{version.version} installed successfully')
+            logger.info("frontend_installed", version=version.version)
             return True
 
         except Exception as e:
-            logger.error(f'Failed to download frontend: {e}')
+            logger.error("frontend_download_failed", error=str(e))
             if temp_file.exists():
                 temp_file.unlink()
             return False
@@ -397,7 +397,7 @@ class FrontendManager:
         """
         # Case 1: RX_FRONTEND_URL is set - force download
         if self.env_url:
-            logger.info(f'RX_FRONTEND_URL is set, downloading from: {self.env_url}')
+            logger.info("frontend_url_override", url=self.env_url)
             return await self.download_frontend(self.env_url, 'custom')
 
         # Case 2: RX_FRONTEND_VERSION is set
@@ -410,38 +410,38 @@ class FrontendManager:
 
             # If we already have the requested version cached, use it
             if cached_version and cached_version == requested_version:
-                logger.info(f'Frontend v{requested_version} is already cached')
+                logger.info("frontend_already_cached", version=requested_version)
                 return self.is_frontend_available()
 
             # Download the requested version
             if self.env_version.lower() == 'latest':
-                logger.info('RX_FRONTEND_VERSION=latest, checking GitHub for latest release')
+                logger.info("checking_latest_release")
                 release = await self.get_latest_release_info()
                 if release:
                     download_url = self.get_download_url_from_release(release)
                     if download_url:
                         return await self.download_frontend(download_url, release.get('tag_name', 'latest'))
             else:
-                logger.info(f'RX_FRONTEND_VERSION={self.env_version}, downloading specific version')
+                logger.info("downloading_specific_version", version=self.env_version)
                 download_url = self.get_direct_download_url(self.env_version)
                 return await self.download_frontend(download_url, self.env_version)
 
             # Failed to download requested version
             if self.is_frontend_available():
-                logger.warning('Failed to download requested version, using cached frontend')
+                logger.warning("download_failed_using_cached_frontend")
                 return True
             return False
 
         # Case 3: No env vars - use cached if available (no GitHub requests)
         if self.is_frontend_available():
-            logger.debug('Frontend is cached, no env vars set - using cached version')
+            logger.debug("using_cached_frontend")
             return True
 
         # Case 4: No cache, no env vars - download latest
-        logger.info('No cached frontend found, downloading latest release')
+        logger.info("downloading_latest_frontend")
         release = await self.get_latest_release_info()
         if not release:
-            logger.error('Failed to fetch latest release and no cache available')
+            logger.error("latest_release_fetch_failed_no_cache")
             return False
 
         download_url = self.get_download_url_from_release(release)
@@ -475,7 +475,7 @@ class FrontendManager:
 
             # Validate it's within cache directory
             if not validate_path_security(self.cache_dir, full_path):
-                logger.warning(f'Rejected unsafe path: {requested_path}')
+                logger.warning("unsafe_path_rejected", requested_path=requested_path)
                 return None
 
             # Check file exists
@@ -484,7 +484,7 @@ class FrontendManager:
 
             return full_path
         except Exception as e:
-            logger.error(f'Path validation error for {requested_path}: {e}')
+            logger.error("path_validation_error", requested_path=requested_path, error=str(e))
             return None
 
 

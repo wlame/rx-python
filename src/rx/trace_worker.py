@@ -9,7 +9,6 @@ Extracted from trace.py to keep the main orchestrator focused on
 coordination logic while this module handles per-task processing.
 """
 
-import logging
 import re
 import subprocess
 import threading
@@ -18,6 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
+import structlog
+
 from rx.cli import prometheus as prom
 from rx.file_utils import FileTask
 from rx.models import ContextLine, Submatch
@@ -25,7 +26,7 @@ from rx.rg_json import RgContextEvent, RgMatchEvent, parse_rg_json_event
 from rx.utils import NEWLINE_SYMBOL
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @dataclass
@@ -153,8 +154,12 @@ def process_task_worker(
     prom.active_workers.inc()
 
     logger.debug(
-        f'[WORKER {thread_id}] Starting JSON task {task.task_id}: '
-        f'file={task.filepath}, offset={task.offset}, count={task.count}'
+        "task_started",
+        task_id=task.task_id,
+        filepath=task.filepath,
+        offset=task.offset,
+        count=task.count,
+        thread=thread_id,
     )
 
     try:
@@ -183,9 +188,13 @@ def process_task_worker(
         count_blocks = (task.count + skip_remainder + bs - 1) // bs
 
         logger.debug(
-            f'[WORKER {thread_id}] Task {task.task_id}: '
-            f'dd bs={bs} skip={skip_blocks} count={count_blocks}, '
-            f'actual_dd_offset={actual_dd_offset}'
+            "dd_params_calculated",
+            task_id=task.task_id,
+            bs=bs,
+            skip=skip_blocks,
+            count_blocks=count_blocks,
+            actual_dd_offset=actual_dd_offset,
+            thread=thread_id,
         )
 
         # Run dd | rg with --json mode
@@ -214,7 +223,7 @@ def process_task_worker(
 
         rg_cmd.append('-')  # Read from stdin
 
-        logger.debug(f'[WORKER {thread_id}] Running: {" ".join(rg_cmd)}')
+        logger.debug("rg_command_running", rg_cmd=" ".join(rg_cmd), thread=thread_id)
 
         rg_proc = subprocess.Popen(
             rg_cmd,
@@ -298,8 +307,11 @@ def process_task_worker(
                     )
 
                     logger.debug(
-                        f'[WORKER {thread_id}] Match: line={match_data.line_number}, '
-                        f'offset={absolute_offset}, submatches={len(submatches)}'
+                        "match_found",
+                        line_number=match_data.line_number,
+                        offset=absolute_offset,
+                        submatches=len(submatches),
+                        thread=thread_id,
                     )
 
             elif isinstance(event, RgContextEvent):
@@ -318,7 +330,10 @@ def process_task_worker(
                     )
 
                     logger.debug(
-                        f'[WORKER {thread_id}] Context: line={context_data.line_number}, offset={absolute_offset}'
+                        "context_line_found",
+                        line_number=context_data.line_number,
+                        offset=absolute_offset,
+                        thread=thread_id,
                     )
 
         rg_proc.wait()
@@ -339,13 +354,17 @@ def process_task_worker(
                     f.write(f'  Duration: {elapsed:.3f}s\n')
                     f.write(f'  Return code (rg): {rg_proc.returncode}\n')
                     f.write(f'  Return code (dd): {dd_proc.returncode}\n')
-                logger.info(f'[WORKER {thread_id}] Debug output written to {debug_file}')
+                logger.info("debug_output_written", debug_file=debug_file, thread=thread_id)
             except Exception as e:
-                logger.warning(f'[WORKER {thread_id}] Failed to write debug file: {e}')
+                logger.warning("debug_file_write_failed", error=str(e), thread=thread_id)
 
         logger.debug(
-            f'[WORKER {thread_id}] Task {task.task_id} completed: '
-            f'found {len(matches)} matches, {len(context_lines)} context lines in {elapsed:.3f}s'
+            "task_completed",
+            task_id=task.task_id,
+            matches=len(matches),
+            context_lines=len(context_lines),
+            elapsed=round(elapsed, 3),
+            thread=thread_id,
         )
 
         # Track task completion
@@ -356,7 +375,7 @@ def process_task_worker(
 
     except Exception as e:
         elapsed = time.time() - start_time
-        logger.error(f'[WORKER {thread_id}] Task {task.task_id} failed after {elapsed:.3f}s: {e}')
+        logger.error("task_failed", task_id=task.task_id, elapsed=round(elapsed, 3), error=str(e), thread=thread_id)
 
         # Track task failure
         prom.worker_tasks_failed.inc()

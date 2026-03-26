@@ -1,11 +1,11 @@
 """Line length spike detector."""
 
-import logging
+import structlog
 
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -21,7 +21,7 @@ class LineLengthSpikeDetector(AnomalyDetector):
         self._filepath = filepath
         self._detection_count = 0
         self._max_detected_length = 0
-        logger.debug(f'[line_length_spike] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     # Minimum stddev threshold to avoid flagging in uniform files
     MIN_STDDEV_THRESHOLD = 40

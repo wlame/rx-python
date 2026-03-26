@@ -19,12 +19,12 @@ Example usage:
 """
 
 import json
-import logging
+import structlog
 from typing import Literal, Union
 
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 # ============================================================================
@@ -267,10 +267,10 @@ def parse_rg_json_event(json_line: str | bytes) -> RgEvent | None:
         return model(**data)
 
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON from ripgrep: {e}")
+        logger.error("json_parse_failed", error=str(e))
         return None
     except Exception as e:
-        logger.error(f"Error parsing ripgrep event: {e}")
+        logger.error("rg_event_parse_error", error=str(e))
         return None
 
 

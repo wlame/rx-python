@@ -8,7 +8,7 @@ Extracted from trace.py to keep the main orchestrator focused on
 coordination logic while this module handles compression-specific details.
 """
 
-import logging
+import structlog
 import subprocess
 import threading
 import time
@@ -24,7 +24,7 @@ from rx.seekable_zstd import decompress_frame, read_seek_table
 from rx.utils import NEWLINE_SYMBOL
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 def process_compressed_file(
@@ -58,7 +58,7 @@ def process_compressed_file(
     start_time = time.time()
     thread_id = threading.current_thread().name
 
-    logger.info(f'[COMPRESSED {thread_id}] Processing compressed file: {filepath}')
+    logger.info("processing_compressed_file", filepath=filepath, thread=thread_id)
 
     # Detect compression format and get decompressor command
     compression_format = detect_compression(filepath)
@@ -67,7 +67,7 @@ def process_compressed_file(
 
     decompress_cmd = get_decompressor_command(compression_format, filepath)
 
-    logger.debug(f'[COMPRESSED {thread_id}] Using decompressor: {" ".join(decompress_cmd)}')
+    logger.debug("using_decompressor", command=" ".join(decompress_cmd), thread=thread_id)
 
     try:
         # Start decompression process
@@ -96,7 +96,7 @@ def process_compressed_file(
 
         rg_cmd.append('-')  # Read from stdin
 
-        logger.debug(f'[COMPRESSED {thread_id}] Running: {" ".join(rg_cmd)}')
+        logger.debug("running_rg_command", command=" ".join(rg_cmd), thread=thread_id)
 
         rg_proc = subprocess.Popen(
             rg_cmd,
@@ -142,8 +142,11 @@ def process_compressed_file(
                 match_count += 1
 
                 logger.debug(
-                    f'[COMPRESSED {thread_id}] Match: line={match_data.line_number}, '
-                    f'offset={match_data.absolute_offset}, submatches={len(submatches)}'
+                    "compressed_match",
+                    line=match_data.line_number,
+                    offset=match_data.absolute_offset,
+                    submatch_count=len(submatches),
+                    thread=thread_id,
                 )
 
             elif isinstance(event, RgContextEvent):
@@ -163,20 +166,23 @@ def process_compressed_file(
         # Check for decompression errors
         if decompress_proc.returncode != 0:
             stderr = decompress_proc.stderr.read().decode() if decompress_proc.stderr else ''
-            logger.warning(f'[COMPRESSED {thread_id}] Decompression warning: {stderr}')
+            logger.warning("decompression_warning", stderr=stderr, thread=thread_id)
 
         elapsed = time.time() - start_time
 
         logger.info(
-            f'[COMPRESSED {thread_id}] Completed: {len(matches)} matches, '
-            f'{len(context_lines)} context lines in {elapsed:.3f}s'
+            "compressed_file_completed",
+            match_count=len(matches),
+            context_line_count=len(context_lines),
+            elapsed=round(elapsed, 3),
+            thread=thread_id,
         )
 
         return (matches, context_lines, elapsed)
 
     except Exception as e:
         elapsed = time.time() - start_time
-        logger.error(f'[COMPRESSED {thread_id}] Failed after {elapsed:.3f}s: {e}')
+        logger.error("compressed_file_failed", elapsed=round(elapsed, 3), error=str(e), thread=thread_id)
         raise
 
 
@@ -214,7 +220,11 @@ def process_seekable_zstd_frame_batch(
     thread_id = threading.current_thread().name
 
     logger.debug(
-        f'[SEEKABLE {thread_id}] Processing {len(frame_indices)} frames: {frame_indices[0]}-{frame_indices[-1]}'
+        "processing_seekable_frames",
+        frame_count=len(frame_indices),
+        frame_range_start=frame_indices[0],
+        frame_range_end=frame_indices[-1],
+        thread=thread_id,
     )
 
     # Track active workers
@@ -236,7 +246,10 @@ def process_seekable_zstd_frame_batch(
         compressed_data = b''.join(compressed_chunks)
 
         logger.debug(
-            f'[SEEKABLE {thread_id}] Read {total_compressed_size} compressed bytes for {len(frame_indices)} frames'
+            "read_compressed_frames",
+            compressed_bytes=total_compressed_size,
+            frame_count=len(frame_indices),
+            thread=thread_id,
         )
 
         # Build ripgrep command
@@ -323,10 +336,15 @@ def process_seekable_zstd_frame_batch(
 
                         # Debug logging
                         logger.debug(
-                            f'[SEEKABLE {thread_id}] Match: frame_idx={frame_idx}, '
-                            f'first_line={frame_info.first_line}, line_in_batch={line_in_batch}, '
-                            f'lines_before={lines_before}, line_in_frame={line_in_frame}, '
-                            f'adjusted={adjusted_line_number}, actual_line_count={frame_line_counts[i]}'
+                            "seekable_match",
+                            frame_idx=frame_idx,
+                            first_line=frame_info.first_line,
+                            line_in_batch=line_in_batch,
+                            lines_before=lines_before,
+                            line_in_frame=line_in_frame,
+                            adjusted_line_number=adjusted_line_number,
+                            actual_line_count=frame_line_counts[i],
+                            thread=thread_id,
                         )
 
                         submatches = [
@@ -385,8 +403,11 @@ def process_seekable_zstd_frame_batch(
         elapsed = time.time() - start_time
 
         logger.debug(
-            f'[SEEKABLE {thread_id}] Batch completed: '
-            f'{len(matches)} matches, {len(context_lines)} context lines in {elapsed:.3f}s'
+            "seekable_batch_completed",
+            match_count=len(matches),
+            context_line_count=len(context_lines),
+            elapsed=round(elapsed, 3),
+            thread=thread_id,
         )
 
         prom.worker_tasks_completed.inc()
@@ -396,7 +417,7 @@ def process_seekable_zstd_frame_batch(
 
     except Exception as e:
         elapsed = time.time() - start_time
-        logger.error(f'[SEEKABLE {thread_id}] Batch failed after {elapsed:.3f}s: {e}')
+        logger.error("seekable_batch_failed", elapsed=round(elapsed, 3), error=str(e), thread=thread_id)
         prom.worker_tasks_failed.inc()
         prom.active_workers.dec()
         raise
@@ -432,14 +453,16 @@ def process_seekable_zstd_file(
 
     start_time = time.time()
 
-    logger.info(f'[SEEKABLE] Processing seekable zstd file: {filepath}')
+    logger.info("processing_seekable_zstd_file", filepath=filepath)
 
     # Get or build the index to get frame-to-line mapping
     index = get_or_build_index(filepath)
 
     logger.info(
-        f'[SEEKABLE] File has {index.frame_count} frames, '
-        f'{index.line_count:,} lines, {index.decompressed_size_bytes:,} bytes decompressed'
+        "seekable_file_indexed",
+        frame_count=index.frame_count,
+        line_count=index.line_count,
+        decompressed_bytes=index.decompressed_size_bytes,
     )
 
     # Create enhanced frame info list with line mapping
@@ -457,12 +480,13 @@ def process_seekable_zstd_file(
     # NOTE: Batching only works correctly for line-aligned frames
     if frames_are_line_aligned:
         FRAMES_PER_BATCH = 100  # Batching enabled for line-aligned frames
-        logger.info(f'[SEEKABLE] Frames are line-aligned, batching enabled ({FRAMES_PER_BATCH} frames/batch)')
+        logger.info("frames_line_aligned", batching_enabled=True, frames_per_batch=FRAMES_PER_BATCH)
     else:
         FRAMES_PER_BATCH = 1  # Disable batching for non-line-aligned frames
         logger.warning(
-            '[SEEKABLE] Frames are NOT line-aligned, batching disabled for accuracy. '
-            'Consider recreating this .zst file for better performance.'
+            "frames_not_line_aligned",
+            batching_enabled=False,
+            hint="Consider recreating this .zst file for better performance",
         )
 
     frame_batches = []
@@ -470,7 +494,7 @@ def process_seekable_zstd_file(
         batch_indices = list(range(i, min(i + FRAMES_PER_BATCH, len(index.frames))))
         frame_batches.append(batch_indices)
 
-    logger.info(f'[SEEKABLE] Created {len(frame_batches)} batches ({FRAMES_PER_BATCH} frames/batch)')
+    logger.info("created_frame_batches", batch_count=len(frame_batches), frames_per_batch=FRAMES_PER_BATCH)
 
     # Track parallel tasks created
     prom.parallel_tasks_created.observe(len(frame_batches))
@@ -508,8 +532,11 @@ def process_seekable_zstd_file(
                 all_context_lines.extend(context_lines)
 
                 logger.debug(
-                    f'[SEEKABLE] Batch {batch_indices[0]}-{batch_indices[-1]} contributed '
-                    f'{len(matches)} matches, {len(context_lines)} context lines'
+                    "batch_results_collected",
+                    batch_start=batch_indices[0],
+                    batch_end=batch_indices[-1],
+                    match_count=len(matches),
+                    context_line_count=len(context_lines),
                 )
 
                 # Note: We don't break early on max_results because we need to sort all matches
@@ -517,7 +544,12 @@ def process_seekable_zstd_file(
                 # not just the first matches found by parallel workers
 
             except Exception as e:
-                logger.error(f'[SEEKABLE] Batch {batch_indices[0]}-{batch_indices[-1]} failed: {e}')
+                logger.error(
+                    "batch_failed",
+                    batch_start=batch_indices[0],
+                    batch_end=batch_indices[-1],
+                    error=str(e),
+                )
 
     # Sort matches by line number
     all_matches.sort(key=lambda m: m['line_number'])
@@ -529,9 +561,11 @@ def process_seekable_zstd_file(
     elapsed = time.time() - start_time
 
     logger.info(
-        f'[SEEKABLE] Completed: {len(all_matches)} matches, '
-        f'{len(all_context_lines)} context lines in {elapsed:.3f}s '
-        f'(worker time: {total_time:.3f}s)'
+        "seekable_file_completed",
+        match_count=len(all_matches),
+        context_line_count=len(all_context_lines),
+        elapsed=round(elapsed, 3),
+        worker_time=round(total_time, 3),
     )
 
     return (all_matches, all_context_lines, elapsed)

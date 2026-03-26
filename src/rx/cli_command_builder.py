@@ -11,11 +11,12 @@ Example:
     rx -e error /var/log/app.log
 """
 
-import logging
 import shlex
 from typing import Any, Callable
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger()
 
 # Registry mapping endpoint names to builder functions
 CLI_BUILDERS: dict[str, Callable[[dict[str, Any]], str | None]] = {}
@@ -85,7 +86,7 @@ def build_cli_command(endpoint_name: str, params: dict[str, Any]) -> str | None:
         try:
             return builder(params)
         except Exception as e:
-            logger.warning(f"Failed to build CLI command for {endpoint_name}: {e}")
+            logger.warning("Failed to build CLI command", endpoint=endpoint_name, error=str(e))
             return None
     return None
 
@@ -111,7 +112,7 @@ def add_cli_command(
     cli_cmd = build_cli_command(endpoint_name, params)
     if cli_cmd:
         response["cli_command"] = cli_cmd
-        logger.debug(f"CLI equivalent: {cli_cmd}")
+        logger.debug("CLI equivalent", cli_command=cli_cmd)
     return response
 
 

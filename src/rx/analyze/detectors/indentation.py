@@ -1,11 +1,11 @@
 """Indentation block detector."""
 
-import logging
+import structlog
 
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -21,7 +21,7 @@ class IndentationBlockDetector(AnomalyDetector):
         self._filepath = filepath
         self._detection_count = 0
         self._merge_count = 0
-        logger.debug(f'[indentation_block] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     # Minimum lines to consider a block
     MIN_BLOCK_SIZE = 3

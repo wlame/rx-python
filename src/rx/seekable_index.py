@@ -15,7 +15,7 @@ across all file types (text, compressed, seekable zstd).
 
 import hashlib
 import json
-import logging
+import structlog
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
@@ -32,7 +32,7 @@ from rx.seekable_zstd import (
 from rx.utils import get_rx_cache_dir
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Import unified index version for consistency
 from rx.unified_index import UNIFIED_INDEX_VERSION
@@ -116,7 +116,7 @@ def is_index_valid(zst_path: str | Path) -> bool:
 
         # Check version
         if index.version != UNIFIED_INDEX_VERSION:
-            logger.debug(f'Index version mismatch: {index.version} != {UNIFIED_INDEX_VERSION}')
+            logger.debug("index_version_mismatch", current=index.version, expected=UNIFIED_INDEX_VERSION)
             return False
 
         # Check file metadata
@@ -124,17 +124,17 @@ def is_index_valid(zst_path: str | Path) -> bool:
         zst_mtime = datetime.fromtimestamp(zst_stat.st_mtime).isoformat()
 
         if index.source_modified_at != zst_mtime:
-            logger.debug(f'Index invalid: mtime mismatch for {zst_path}')
+            logger.debug("index_invalid_mtime_mismatch", path=str(zst_path))
             return False
 
         if index.source_size_bytes != zst_stat.st_size:
-            logger.debug(f'Index invalid: size mismatch for {zst_path}')
+            logger.debug("index_invalid_size_mismatch", path=str(zst_path))
             return False
 
         return True
 
     except (OSError, json.JSONDecodeError, KeyError) as e:
-        logger.debug(f'Index validation failed for {zst_path}: {e}')
+        logger.debug("index_validation_failed", path=str(zst_path), error=str(e))
         return False
 
 
@@ -152,7 +152,7 @@ def load_index(index_path: Path | str) -> UnifiedFileIndex | None:
             data = json.load(f)
         return UnifiedFileIndex(**data)
     except (OSError, json.JSONDecodeError, ValueError) as e:
-        logger.debug(f'Failed to load index {index_path}: {e}')
+        logger.debug("index_load_failed", index_path=str(index_path), error=str(e))
         return None
 
 
@@ -173,11 +173,11 @@ def save_index(index: UnifiedFileIndex, index_path: Path | str) -> bool:
         with open(index_path, 'w', encoding='utf-8') as f:
             json.dump(index.model_dump(mode='json'), f, indent=2)
 
-        logger.info(f'Seekable index saved to {index_path}')
+        logger.info("seekable_index_saved", index_path=str(index_path))
         return True
 
     except OSError as e:
-        logger.error(f'Failed to save index {index_path}: {e}')
+        logger.error("index_save_failed", index_path=str(index_path), error=str(e))
         return False
 
 
@@ -222,7 +222,7 @@ def build_index(
     if not is_seekable_zstd(zst_path):
         raise ValueError(f'Not a seekable zstd file: {zst_path}')
 
-    logger.info(f'Building index for {zst_path}...')
+    logger.info("building_seekable_index", path=str(zst_path))
 
     # Get basic info
     zst_info = get_seekable_zstd_info(zst_path)
@@ -305,7 +305,7 @@ def build_index(
     index_path = get_index_path(zst_path)
     save_index(index, index_path)
 
-    logger.info(f'Index built: {total_lines} lines in {len(frames)} frames')
+    logger.info("seekable_index_built", total_lines=total_lines, frame_count=len(frames))
     return index
 
 
@@ -327,7 +327,7 @@ def get_or_build_index(
     # Try to get existing valid index
     index = get_index(zst_path)
     if index is not None:
-        logger.debug(f'Using cached index for {zst_path}')
+        logger.debug("using_cached_index", path=str(zst_path))
         return index
 
     # Build new index
@@ -447,10 +447,10 @@ def delete_index(zst_path: str | Path) -> bool:
     try:
         if index_path.exists():
             index_path.unlink()
-            logger.info(f'Deleted index for {zst_path}')
+            logger.info("index_deleted", path=str(zst_path))
         return True
     except OSError as e:
-        logger.error(f'Failed to delete index {index_path}: {e}')
+        logger.error("index_delete_failed", index_path=str(index_path), error=str(e))
         return False
 
 

@@ -1,12 +1,13 @@
 """Format deviation detector."""
 
-import logging
 import re
+
+import structlog
 
 from .base import AnomalyDetector, LineContext, register_detector
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @register_detector
@@ -37,7 +38,7 @@ class FormatDeviationDetector(AnomalyDetector):
         self._dominant_pattern: tuple[bool, ...] | None = None
         self._detection_count = 0
         self._pattern_locked = False
-        logger.debug(f'[format_deviation] Initialized for file: {filepath}')
+        logger.debug("Initialized detector", filepath=filepath)
 
     @property
     def name(self) -> str:

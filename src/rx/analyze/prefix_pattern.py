@@ -13,18 +13,18 @@ Example usage:
         print(f"Coverage: {pattern.coverage:.1%}")
 """
 
-import logging
 import os
 import re
 from collections import Counter
 from dataclasses import dataclass
 
+import structlog
 from drain3 import TemplateMiner
 from drain3.masking import LogMasker, RegexMaskingInstruction
 from drain3.template_miner_config import TemplateMinerConfig
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 @dataclass
@@ -131,10 +131,10 @@ class PrefixPatternExtractor:
         Returns:
             PrefixPattern if a dominant pattern is found, None otherwise.
         """
-        logger.debug(f'Extracting prefix pattern from {len(lines)} lines')
+        logger.debug("Extracting prefix pattern", line_count=len(lines))
 
         if not lines:
-            logger.debug('No lines provided, returning None')
+            logger.debug("No lines provided, returning None")
             return None
 
         miner = self._create_miner()
@@ -148,26 +148,31 @@ class PrefixPatternExtractor:
             miner.add_log_message(masked)
             processed_count += 1
 
-        logger.debug(f'Processed {processed_count} non-empty lines through Drain3')
+        logger.debug("Processed lines through Drain3", processed_count=processed_count)
 
         if not miner.drain.clusters:
-            logger.debug('No clusters created by Drain3, returning None')
+            logger.debug("No clusters created by Drain3, returning None")
             return None
 
         total_lines = sum(c.size for c in miner.drain.clusters)
-        logger.debug(f'Drain3 created {len(miner.drain.clusters)} clusters covering {total_lines} lines')
+        logger.debug("Drain3 clustering complete", cluster_count=len(miner.drain.clusters), total_lines=total_lines)
 
         if total_lines == 0:
-            logger.debug('Total lines in clusters is 0, returning None')
+            logger.debug("Total lines in clusters is 0, returning None")
             return None
 
         # Log top clusters for debugging
         sorted_clusters = sorted(miner.drain.clusters, key=lambda c: -c.size)
-        logger.debug('Top clusters by size:')
         for i, cluster in enumerate(sorted_clusters[:5]):
             pct = cluster.size / total_lines * 100
             template = cluster.get_template()
-            logger.debug(f'  #{i + 1}: {cluster.size} lines ({pct:.1f}%): {template[:80]}...')
+            logger.debug(
+                "Top cluster",
+                rank=i + 1,
+                size=cluster.size,
+                pct=round(pct, 1),
+                template=template[:80],
+            )
 
         # Extract prefix tokens from each cluster
         prefix_counts: Counter[tuple[str, ...]] = Counter()
@@ -176,13 +181,12 @@ class PrefixPatternExtractor:
             tokens = tuple(template.split()[: self.max_prefix_tokens])
             prefix_counts[tokens] += cluster.size
 
-        logger.debug(f'Extracted {len(prefix_counts)} unique prefix patterns (max {self.max_prefix_tokens} tokens)')
+        logger.debug("Extracted unique prefix patterns", count=len(prefix_counts), max_tokens=self.max_prefix_tokens)
 
         # Log top prefix patterns
-        logger.debug('Top prefix patterns:')
         for prefix, count in prefix_counts.most_common(5):
             pct = count / total_lines * 100
-            logger.debug(f'  {count} lines ({pct:.1f}%): {" ".join(prefix)[:60]}...')
+            logger.debug("Top prefix pattern", count=count, pct=round(pct, 1), pattern=" ".join(prefix)[:60])
 
         # Find the longest common prefix that meets coverage threshold
         # Try progressively shorter prefixes
@@ -190,8 +194,9 @@ class PrefixPatternExtractor:
         best_coverage = 0.0
 
         logger.debug(
-            f'Searching for prefix with >= {self.coverage_threshold:.0%} coverage '
-            f'(trying lengths {self.max_prefix_tokens} down to 1)'
+            "Searching for prefix pattern",
+            coverage_threshold=self.coverage_threshold,
+            max_tokens=self.max_prefix_tokens,
         )
 
         for prefix_len in range(self.max_prefix_tokens, 0, -1):
@@ -208,7 +213,10 @@ class PrefixPatternExtractor:
                         best_prefix = prefix
                         best_coverage = coverage
                         logger.debug(
-                            f'Found prefix at length {prefix_len} with {coverage:.1%} coverage: {" ".join(prefix)[:60]}'
+                            "Found prefix candidate",
+                            prefix_len=prefix_len,
+                            coverage=round(coverage, 3),
+                            pattern=" ".join(prefix)[:60],
                         )
                     break
 
@@ -217,16 +225,20 @@ class PrefixPatternExtractor:
             most_common, count = prefix_counts.most_common(1)[0]
             coverage = count / total_lines
             logger.debug(
-                f'No prefix met {self.coverage_threshold:.0%} threshold. Most common has {coverage:.1%} coverage'
+                "No prefix met coverage threshold",
+                threshold=self.coverage_threshold,
+                best_coverage=round(coverage, 3),
             )
             if coverage >= 0.5:  # At least 50% for fallback
                 best_prefix = most_common
                 best_coverage = coverage
-                logger.debug(f'Using fallback prefix with {coverage:.1%} coverage')
+                logger.debug("Using fallback prefix", coverage=round(coverage, 3))
             else:
                 logger.info(
-                    f'No dominant prefix pattern found. Best coverage was {coverage:.1%} '
-                    f'(need >= 50% for fallback, >= {self.coverage_threshold:.0%} for primary)'
+                    "No dominant prefix pattern found",
+                    best_coverage=round(coverage, 3),
+                    fallback_threshold=0.5,
+                    primary_threshold=self.coverage_threshold,
                 )
                 return None
 
@@ -234,13 +246,16 @@ class PrefixPatternExtractor:
         pattern_str = ' '.join(best_prefix)
         regex = self._prefix_to_regex(best_prefix)
 
-        logger.debug(f'Generated regex: {regex[:100]}...')
+        logger.debug("Generated regex", regex=regex[:100])
 
         # Estimate prefix length from sample lines
         prefix_length = self._estimate_prefix_length(lines, regex)
 
         logger.info(
-            f'Prefix pattern detected: "{pattern_str}" (coverage: {best_coverage:.1%}, length: ~{prefix_length} chars)'
+            "Prefix pattern detected",
+            pattern=pattern_str,
+            coverage=round(best_coverage, 3),
+            prefix_length=prefix_length,
         )
 
         return PrefixPattern(
@@ -362,7 +377,11 @@ class PrefixPatternExtractor:
         skip_bytes = int(file_size * skip_ratio)
 
         logger.debug(
-            f'Sampling file: {filepath} (size: {file_size} bytes, skip: {skip_bytes} bytes = {skip_ratio:.0%})'
+            "Sampling file",
+            filepath=filepath,
+            file_size=file_size,
+            skip_bytes=skip_bytes,
+            skip_ratio=skip_ratio,
         )
 
         lines = []
@@ -374,7 +393,7 @@ class PrefixPatternExtractor:
                     f.seek(skip_bytes)
                     # Skip partial line
                     partial = f.readline()
-                    logger.debug(f'Skipped to byte {skip_bytes}, discarded partial line: {len(partial)} bytes')
+                    logger.debug("Skipped to byte offset", skip_bytes=skip_bytes, partial_line_bytes=len(partial))
 
                 # Read lines
                 for _ in range(sample_size * 2):  # Read extra in case of empty lines
@@ -391,20 +410,18 @@ class PrefixPatternExtractor:
                         else:
                             empty_count += 1
                     except Exception as e:
-                        logger.debug(f'Failed to decode line: {e}')
+                        logger.debug("Failed to decode line", error=str(e))
                         continue
 
         except Exception as e:
-            logger.warning(f'Failed to sample file {filepath}: {e}')
+            logger.warning("Failed to sample file", filepath=filepath, error=str(e))
             return []
 
-        logger.debug(f'Sampled {len(lines)} non-empty lines (skipped {empty_count} empty lines)')
+        logger.debug("Sampled lines from file", line_count=len(lines), empty_skipped=empty_count)
 
         # Log a few sample lines for debugging
-        if lines and logger.isEnabledFor(logging.DEBUG):
-            logger.debug('Sample lines (first 3):')
-            for i, line in enumerate(lines[:3]):
-                logger.debug(f'  [{i + 1}]: {line[:100]}{"..." if len(line) > 100 else ""}')
+        for i, line in enumerate(lines[:3]):
+            logger.debug("Sample line", index=i + 1, line=line[:100])
 
         return lines
 
@@ -426,14 +443,14 @@ class PrefixPatternExtractor:
         Returns:
             PrefixPattern if found, None otherwise.
         """
-        logger.debug(f'extract_from_file called: {filepath} (sample_size={sample_size}, skip_ratio={skip_ratio})')
+        logger.debug("extract_from_file called", filepath=filepath, sample_size=sample_size, skip_ratio=skip_ratio)
 
         lines = self.sample_file(filepath, sample_size, skip_ratio)
         if not lines:
-            logger.info(f'No lines sampled from file: {filepath}')
+            logger.info("No lines sampled from file", filepath=filepath)
             return None
 
         result = self.extract_from_lines(lines)
         if result is None:
-            logger.info(f'No prefix pattern found for file: {filepath}')
+            logger.info("No prefix pattern found for file", filepath=filepath)
         return result

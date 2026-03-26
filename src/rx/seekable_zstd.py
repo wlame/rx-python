@@ -11,7 +11,7 @@ The seek table allows finding the compressed offset for any decompressed positio
 enabling parallel processing and random access without full decompression.
 """
 
-import logging
+import structlog
 import os
 import shutil
 import struct
@@ -27,7 +27,7 @@ from rx.compression import (
     get_decompressor_command,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Default frame size: MIN_CHUNK_SIZE // 5 = 4MB
 # This gives roughly 20-60MB of decompressed text per frame (5-15x compression ratio)
@@ -402,7 +402,7 @@ def create_seekable_zstd(
 
     try:
         if input_compression != CompressionFormat.NONE:
-            logger.info(f"Decompressing {input_compression.value} input first...")
+            logger.info("decompressing_input", compression_format=input_compression.value)
             # Create temporary file for decompressed content
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".tmp")
             temp_file.close()
@@ -470,7 +470,7 @@ def _create_with_t2sz(
 
     cmd.append(str(input_path))
 
-    logger.info(f"Running: {' '.join(cmd)}")
+    logger.info("running_t2sz", command=cmd)
     proc = subprocess.run(cmd, capture_output=True)
 
     if proc.returncode != 0:

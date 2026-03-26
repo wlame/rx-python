@@ -2,7 +2,7 @@
 
 import heapq
 import json
-import logging
+import structlog
 import os
 import random
 import re
@@ -23,7 +23,7 @@ from rx.compression import decompress_to_file, detect_compression, is_compressed
 from rx.file_utils import MAX_SUBPROCESSES, FileTask, create_file_tasks, is_text_file
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 # =============================================================================
@@ -880,7 +880,7 @@ class SparseLineOffsets:
                 self._offsets[line_num] = off
                 return
         # If not found, it's a programming error but don't crash
-        logger.warning(f'Line {line_num} not found in recent window for offset tracking')
+        logger.warning("line_not_in_recent_window", line_num=line_num)
 
     def get(self, line_num: int, default: int = 0) -> int:
         """Get the byte offset for a line number."""
@@ -951,17 +951,17 @@ def rg_prescan_keywords(filepath: str, patterns: list[tuple[re.Pattern, float]])
                 except (ValueError, IndexError):
                     continue
 
-        logger.info(f'rg prescan found {len(matching_lines)} lines with error keywords in {filepath}')
+        logger.info("rg_prescan_completed", match_count=len(matching_lines), filepath=filepath)
         return matching_lines
 
     except subprocess.TimeoutExpired:
-        logger.warning(f'rg prescan timed out for {filepath}, falling back to line-by-line')
+        logger.warning("rg_prescan_timeout", filepath=filepath)
         return set()
     except FileNotFoundError:
-        logger.warning('ripgrep (rg) not found, falling back to line-by-line keyword detection')
+        logger.warning("ripgrep_not_found", fallback="line-by-line keyword detection")
         return set()
     except Exception as e:
-        logger.warning(f'rg prescan failed: {e}, falling back to line-by-line')
+        logger.warning("rg_prescan_failed", error=str(e))
         return set()
 
 
@@ -996,7 +996,7 @@ def _prescan_chunk_worker(
     start_time = time()
     thread_id = threading.current_thread().name
 
-    logger.debug(f'[PRESCAN {thread_id}] Processing chunk {task.task_id}: offset={task.offset}, count={task.count}')
+    logger.debug("prescan_chunk_started", thread_id=thread_id, task_id=task.task_id, offset=task.offset, count=task.count)
 
     try:
         # Calculate dd block parameters (same approach as rx trace)
@@ -1071,13 +1071,13 @@ def _prescan_chunk_worker(
         dd_proc.wait()
 
         elapsed = time() - start_time
-        logger.debug(f'[PRESCAN {thread_id}] Chunk {task.task_id} completed: {len(matches)} matches in {elapsed:.3f}s')
+        logger.debug("prescan_chunk_completed", thread_id=thread_id, task_id=task.task_id, match_count=len(matches), elapsed_s=round(elapsed, 3))
 
         return (task, matches, elapsed)
 
     except Exception as e:
         elapsed = time() - start_time
-        logger.error(f'[PRESCAN {thread_id}] Chunk {task.task_id} failed: {e}')
+        logger.error("prescan_chunk_failed", thread_id=thread_id, task_id=task.task_id, error=str(e))
         return (task, [], elapsed)
 
 
@@ -1133,7 +1133,7 @@ def rg_prescan_all_detectors(
 
         # Create file tasks for parallel processing
         tasks = create_file_tasks(filepath)
-        logger.info(f'[PRESCAN] Created {len(tasks)} parallel tasks for {filepath}')
+        logger.info("prescan_tasks_created", task_count=len(tasks), filepath=filepath)
 
         # Process chunks in parallel
         all_matches: list[PrescanMatch] = []
@@ -1151,7 +1151,7 @@ def rg_prescan_all_detectors(
                     all_matches.extend(matches)
                     total_worker_time += elapsed
                 except Exception as e:
-                    logger.error(f'[PRESCAN] Task {task.task_id} failed: {e}')
+                    logger.error("prescan_task_failed", task_id=task.task_id, error=str(e))
 
         # Sort by byte offset
         all_matches.sort(key=lambda m: m.byte_offset)
@@ -1166,17 +1166,20 @@ def rg_prescan_all_detectors(
         elapsed = time() - start_time
         total_matches = len(all_matches)
         logger.info(
-            f'[PRESCAN] Completed in {elapsed:.1f}s (worker time: {total_worker_time:.1f}s): '
-            f'{total_matches} matches across {len(matches_by_detector)} detectors'
+            "prescan_completed",
+            elapsed_s=round(elapsed, 1),
+            worker_time_s=round(total_worker_time, 1),
+            total_matches=total_matches,
+            detector_count=len(matches_by_detector),
         )
 
         return matches_by_detector
 
     except FileNotFoundError:
-        logger.warning('ripgrep (rg) not found')
+        logger.warning("ripgrep_not_found")
         return {}
     except Exception as e:
-        logger.warning(f'rg prescan failed: {e}')
+        logger.warning("rg_prescan_failed", error=str(e))
         return {}
 
 
@@ -1190,7 +1193,7 @@ def get_sample_size_lines() -> int:
     try:
         return int(os.environ.get('RX_SAMPLE_SIZE_LINES', '1000000'))
     except (ValueError, TypeError):
-        logger.warning('Invalid RX_SAMPLE_SIZE_LINES value, using default 1000000')
+        logger.warning("invalid_sample_size_lines", default=1000000)
         return 1000000
 
 
@@ -1311,7 +1314,7 @@ class FileAnalyzer:
             List of detector instances configured for this file.
         """
         if self._custom_detectors is not None:
-            logger.debug(f'[DETECTOR] Using {len(self._custom_detectors)} custom detectors')
+            logger.debug("using_custom_detectors", count=len(self._custom_detectors))
             return self._custom_detectors  # Use custom detectors as-is
 
         # Import from rx.analyze.detectors to get the versions with logging
@@ -1354,7 +1357,7 @@ class FileAnalyzer:
             JDD(filepath=filepath),
             FDD(filepath=filepath),
         ]
-        logger.debug(f'[DETECTOR] Created {len(detectors)} default detectors: {[d.name for d in detectors]}')
+        logger.debug("created_default_detectors", count=len(detectors), names=[d.name for d in detectors])
         return detectors
 
     def file_hook(self, filepath: str, result: FileAnalysisState) -> None:
@@ -1638,7 +1641,7 @@ class FileAnalyzer:
                             if index_data:
                                 result.index_checkpoint_count = len(index_data.frames)
                         except Exception as e:
-                            logger.warning(f'Failed to load seekable index: {e}')
+                            logger.warning("seekable_index_load_failed", error=str(e))
                     return
 
             # Check for unified index
@@ -1655,10 +1658,10 @@ class FileAnalyzer:
                     else:
                         result.index_valid = False
                 except Exception as e:
-                    logger.warning(f'Failed to load unified index: {e}')
+                    logger.warning("unified_index_load_failed", error=str(e))
                     result.index_valid = False
         except Exception as e:
-            logger.warning(f'Failed to add index info: {e}')
+            logger.warning("add_index_info_failed", error=str(e))
 
     def _analyze_compressed_file(self, filepath: str, result: FileAnalysisState):
         """Analyze compressed file by decompressing to /tmp and analyzing."""
@@ -1668,14 +1671,14 @@ class FileAnalyzer:
             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as tf:
                 temp_file = tf.name
 
-            logger.info(f'Decompressing {filepath} to {temp_file}')
+            logger.info("decompressing_file", filepath=filepath, temp_file=temp_file)
 
             # Decompress to temp file
             try:
                 decompress_to_file(filepath, temp_file)
             except OSError as e:
                 if 'No space left' in str(e) or 'Disk quota exceeded' in str(e):
-                    logger.warning(f'No space left on device, skipping decompression of {filepath}')
+                    logger.warning("no_space_left", filepath=filepath)
                     return
                 raise
 
@@ -1693,18 +1696,18 @@ class FileAnalyzer:
                 # Analyze the decompressed content
                 self._analyze_text_file(temp_file, result)
             else:
-                logger.info(f'Decompressed file is not text: {filepath}')
+                logger.info("decompressed_file_not_text", filepath=filepath)
 
         except Exception as e:
-            logger.error(f'Failed to analyze compressed file {filepath}: {e}')
+            logger.error("compressed_file_analysis_failed", filepath=filepath, error=str(e))
         finally:
             # IMPORTANT: Clean up temp file
             if temp_file and os.path.exists(temp_file):
                 try:
                     os.remove(temp_file)
-                    logger.debug(f'Cleaned up temp file: {temp_file}')
+                    logger.debug("temp_file_cleaned_up", temp_file=temp_file)
                 except OSError as e:
-                    logger.warning(f'Failed to remove temp file {temp_file}: {e}')
+                    logger.warning("temp_file_removal_failed", temp_file=temp_file, error=str(e))
 
     def _try_load_from_cache(self, filepath: str, file_id: str) -> FileAnalysisState | None:
         """Try to load analysis results from cached unified index.
@@ -1729,7 +1732,7 @@ class FileAnalyzer:
         if not unified_idx.analysis_performed:
             return None
 
-        logger.debug(f'Using cached analysis for {filepath}')
+        logger.debug("using_cached_analysis", filepath=filepath)
 
         try:
             stat_info = os.stat(filepath)
@@ -1777,7 +1780,7 @@ class FileAnalyzer:
             return result
 
         except Exception as e:
-            logger.debug(f'Failed to load from cache for {filepath}: {e}')
+            logger.debug("cache_load_failed", filepath=filepath, error=str(e))
             return None
 
     def analyze_file(self, filepath: str, file_id: str) -> FileAnalysisState:
@@ -1794,20 +1797,20 @@ class FileAnalyzer:
             # Check if anomalies were requested but cache has none
             cache_has_anomalies = bool(cached_index.anomalies)
             if self.detect_anomalies and not cache_has_anomalies:
-                logger.info(f'Cache exists but has no anomalies, re-analyzing: {filepath}')
+                logger.info("cache_missing_anomalies", filepath=filepath)
             else:
-                logger.info(f'Loaded from unified index cache: {filepath}')
+                logger.info("loaded_from_unified_index_cache", filepath=filepath)
                 # Convert UnifiedFileIndex to FileAnalysisState
                 result = self._index_to_state(cached_index, file_id, filepath)
                 # Still run hooks
                 try:
                     self.file_hook(filepath, result)
                 except Exception as e:
-                    logger.warning(f'File hook failed: {e}')
+                    logger.warning("file_hook_failed", error=str(e))
                 try:
                     self.post_hook(result)
                 except Exception as e:
-                    logger.warning(f'Post hook failed: {e}')
+                    logger.warning("post_hook_failed", error=str(e))
                 return result
 
         # STEP 2: Try old index cache (only if use_index_cache is True)
@@ -1815,17 +1818,17 @@ class FileAnalyzer:
         if cached_result is not None:
             # Check if anomalies were requested but cache has none
             if self.detect_anomalies and not cached_result.anomalies:
-                logger.info(f'Index cache exists but has no anomalies, re-analyzing: {filepath}')
+                logger.info("index_cache_missing_anomalies", filepath=filepath)
             else:
                 # Still run hooks on cached result
                 try:
                     self.file_hook(filepath, cached_result)
                 except Exception as e:
-                    logger.warning(f'File hook failed for {filepath}: {e}')
+                    logger.warning("file_hook_failed", filepath=filepath, error=str(e))
                 try:
                     self.post_hook(cached_result)
                 except Exception as e:
-                    logger.warning(f'Post hook failed for {filepath}: {e}')
+                    logger.warning("post_hook_failed", filepath=filepath, error=str(e))
 
                 return cached_result
 
@@ -1872,7 +1875,7 @@ class FileAnalyzer:
                             if result.decompressed_size and result.compressed_size:
                                 result.compression_ratio = result.decompressed_size / result.compressed_size
                     except Exception as e:
-                        logger.debug(f'Could not get seekable zstd info: {e}')
+                        logger.debug("seekable_zstd_info_failed", error=str(e))
 
             # STEP 5: Create detectors for this file (with filepath for logging)
             if self.detect_anomalies:
@@ -1882,7 +1885,7 @@ class FileAnalyzer:
             try:
                 self.file_hook(filepath, result)
             except Exception as e:
-                logger.warning(f'File hook failed for {filepath}: {e}')
+                logger.warning("file_hook_failed", filepath=filepath, error=str(e))
 
             # STEP 7: Analyze content
             if result.is_text:
@@ -1898,7 +1901,7 @@ class FileAnalyzer:
             try:
                 self.post_hook(result)
             except Exception as e:
-                logger.warning(f'Post hook failed for {filepath}: {e}')
+                logger.warning("post_hook_failed", filepath=filepath, error=str(e))
 
             # STEP 10: Save to unified index cache
             try:
@@ -1907,12 +1910,12 @@ class FileAnalyzer:
 
                 save_index(unified_index)
             except Exception as e:
-                logger.warning(f'Failed to save cache: {e}')
+                logger.warning("cache_save_failed", error=str(e))
 
             return result
 
         except Exception as e:
-            logger.error(f'Failed to analyze {filepath}: {e}')
+            logger.error("file_analysis_failed", filepath=filepath, error=str(e))
             # Return minimal result for failed files
             return FileAnalysisState(
                 file_id=file_id,
@@ -2001,7 +2004,9 @@ class FileAnalyzer:
                         result.prefix_coverage = prefix_result.coverage
                         result.prefix_length = prefix_result.prefix_length
                         logger.info(
-                            f'Prefix pattern detected: {prefix_result.pattern} (coverage: {prefix_result.coverage:.1%})'
+                            "prefix_pattern_detected",
+                            pattern=prefix_result.pattern,
+                            coverage=prefix_result.coverage,
                         )
 
                         # Add PrefixDeviationDetector to detectors list
@@ -2013,7 +2018,7 @@ class FileAnalyzer:
                         )
                         self.anomaly_detectors.append(prefix_detector)
                 except Exception as e:
-                    logger.debug(f'Prefix pattern extraction failed: {e}')
+                    logger.debug("prefix_pattern_extraction_failed", error=str(e))
 
                 # Separate detectors: keyword-based (can use rg) vs context-based (need line-by-line)
                 # Collect all keyword patterns for combined rg prescan
@@ -2036,15 +2041,15 @@ class FileAnalyzer:
                     # Prescan for error keywords
                     if keyword_patterns:
                         keyword_prescan_lines = rg_prescan_keywords(filepath, keyword_patterns)
-                        logger.info(f'rg prescan: {len(keyword_prescan_lines)} error keyword lines')
+                        logger.info("rg_prescan_error_keywords", line_count=len(keyword_prescan_lines))
                     # Prescan for warning keywords
                     if warning_patterns:
                         warning_prescan_lines = rg_prescan_keywords(filepath, warning_patterns)
-                        logger.info(f'rg prescan: {len(warning_prescan_lines)} warning keyword lines')
+                        logger.info("rg_prescan_warning_keywords", line_count=len(warning_prescan_lines))
                     # Prescan for secret patterns
                     if secret_patterns:
                         secret_prescan_lines = rg_prescan_keywords(filepath, secret_patterns)
-                        logger.info(f'rg prescan: {len(secret_prescan_lines)} potential secret lines')
+                        logger.info("rg_prescan_secret_patterns", line_count=len(secret_prescan_lines))
 
                 # Add all detectors to context_detectors for line-by-line processing
                 # (prescan just helps with fast rejection of non-matching lines)
@@ -2055,8 +2060,10 @@ class FileAnalyzer:
                     detector_hits[detector.name] = 0
 
                 logger.debug(
-                    f'[ANALYZE] Starting analysis of {filepath} ({file_size:,} bytes) '
-                    f'with {len(self.anomaly_detectors)} detectors'
+                    "analysis_started",
+                    filepath=filepath,
+                    file_size=file_size,
+                    detector_count=len(self.anomaly_detectors),
                 )
 
             # Use binary mode to handle all line ending types correctly
@@ -2188,14 +2195,16 @@ class FileAnalyzer:
                             anomaly_heap.prune_if_needed(line_num, density_threshold=0.01)
                             if len(anomaly_heap) > 0:
                                 logger.debug(
-                                    f'Anomaly detection progress: {line_num:,} lines, {len(anomaly_heap):,} anomalies'
+                                    "anomaly_detection_progress",
+                                    lines_processed=line_num,
+                                    anomaly_count=len(anomaly_heap),
                                 )
 
                     # Run line-level hooks on the fly
                     try:
                         self.line_hook(line, line_num, result)
                     except Exception as e:
-                        logger.warning(f'Line hook failed at {filepath}:{line_num}: {e}')
+                        logger.warning("line_hook_failed", filepath=filepath, line_num=line_num, error=str(e))
 
                     byte_offset += line_byte_length
 
@@ -2251,29 +2260,34 @@ class FileAnalyzer:
                 lines_per_sec = last_line_num / total_analysis_time if total_analysis_time > 0 else 0
 
                 logger.debug(
-                    f'[ANALYZE] Completed {filepath}: {last_line_num:,} lines in {total_analysis_time:.2f}s '
-                    f'({lines_per_sec:,.0f} lines/sec)'
+                    "analysis_completed",
+                    filepath=filepath,
+                    line_count=last_line_num,
+                    elapsed_s=round(total_analysis_time, 2),
+                    lines_per_sec=round(lines_per_sec),
                 )
-                logger.debug(f'[ANALYZE] Anomaly heap size: {len(anomaly_heap) if anomaly_heap else 0}')
-                logger.debug(f'[ANALYZE] Final anomalies after merge: {len(result.anomalies)}')
+                logger.debug("anomaly_heap_size", size=len(anomaly_heap) if anomaly_heap else 0)
+                logger.debug("final_anomalies_after_merge", count=len(result.anomalies))
 
                 # Log per-detector timing and hits
-                logger.debug('[ANALYZE] Detector statistics:')
                 for det_name in sorted(detector_timing.keys()):
                     det_time = detector_timing[det_name]
                     det_hits = detector_hits.get(det_name, 0)
                     pct_time = (det_time / total_analysis_time * 100) if total_analysis_time > 0 else 0
                     logger.debug(
-                        f'[ANALYZE]   {det_name}: {det_time:.3f}s ({pct_time:.1f}%), '
-                        f'{det_hits} hits'
+                        "detector_stats",
+                        detector=det_name,
+                        elapsed_s=round(det_time, 3),
+                        pct_time=round(pct_time, 1),
+                        hits=det_hits,
                     )
 
                 # Log anomaly summary by category
                 if result.anomaly_summary:
-                    logger.debug(f'[ANALYZE] Anomaly summary: {result.anomaly_summary}')
+                    logger.debug("anomaly_summary", summary=result.anomaly_summary)
 
         except Exception as e:
-            logger.error(f'Failed to analyze text content of {filepath}: {e}')
+            logger.error("text_content_analysis_failed", filepath=filepath, error=str(e))
 
     def _merge_and_filter_anomalies(
         self,
@@ -2567,7 +2581,7 @@ def analyze_path(paths: list[str], max_workers: int = 10, detect_anomalies: bool
                     else:
                         skipped_binary_files.append(filepath)
         else:
-            logger.warning(f'Path not found: {path}')
+            logger.warning("path_not_found", path=path)
 
     # Create file IDs
     file_ids = {f'f{i + 1}': filepath for i, filepath in enumerate(files_to_analyze)}
@@ -2591,7 +2605,7 @@ def analyze_path(paths: list[str], max_workers: int = 10, detect_anomalies: bool
                 results.append(result)
                 scanned_files.append(filepath)
             except Exception as e:
-                logger.error(f'Analysis failed for {filepath}: {e}')
+                logger.error("analysis_failed", filepath=filepath, error=str(e))
                 skipped_files.append(filepath)
 
     elapsed_time = time() - start_time

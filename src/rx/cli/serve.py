@@ -121,6 +121,10 @@ def serve_command(host, port, search_roots):
         click.echo(f"Max requests per worker: {limit_max_requests}")
     click.echo("")
 
+    # Configure structured logging for the rx application
+    from rx.log import configure_logging
+    configure_logging(level=log_level.upper())
+
     # Configure logging to suppress uvicorn shutdown tracebacks
     setup_shutdown_filter()
 

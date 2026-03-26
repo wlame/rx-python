@@ -14,7 +14,7 @@ Security Warning:
     allow hooks configured via environment variables.
 """
 
-import logging
+import structlog
 import os
 import uuid
 from time import time
@@ -25,7 +25,7 @@ from pydantic import BaseModel, HttpUrl
 
 from rx.cli import prometheus as prom
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Environment variables for default hook URLs
 HOOK_ON_FILE_URL = os.getenv('RX_HOOK_ON_FILE_URL')
@@ -138,15 +138,15 @@ def _call_hook_internal(url: str, params: dict, timeout: float = HOOK_TIMEOUT_SE
             duration = time() - start_time
             success = response.is_success
             if not success:
-                logger.warning(f"Hook call to {url} returned status {response.status_code} (request_id={request_id})")
+                logger.warning("hook_call_bad_status", url=url, status_code=response.status_code, request_id=request_id)
             return success, duration
     except httpx.TimeoutException:
         duration = time() - start_time
-        logger.warning(f"Hook call to {url} timed out after {timeout}s (request_id={request_id})")
+        logger.warning("hook_call_timeout", url=url, timeout_seconds=timeout, request_id=request_id)
         return False, duration
     except Exception as e:
         duration = time() - start_time
-        logger.warning(f"Hook call to {url} failed: {e} (request_id={request_id})")
+        logger.warning("hook_call_failed", url=url, error=str(e), request_id=request_id)
         return False, duration
 
 
@@ -187,16 +187,16 @@ async def call_hook_async(url: str, payload: dict, event_type: str) -> bool:
             duration = time() - start_time
             success = response.is_success
             if not success:
-                logger.warning(f"Hook call to {url} returned status {response.status_code} (request_id={request_id})")
+                logger.warning("hook_call_bad_status", url=url, status_code=response.status_code, request_id=request_id)
             prom.record_hook_call(event_type, success, duration)
             return success
     except httpx.TimeoutException:
         duration = time() - start_time
-        logger.warning(f"Hook call to {url} timed out after {HOOK_TIMEOUT_SECONDS}s (request_id={request_id})")
+        logger.warning("hook_call_timeout", url=url, timeout_seconds=HOOK_TIMEOUT_SECONDS, request_id=request_id)
         prom.record_hook_call(event_type, False, duration)
         return False
     except Exception as e:
         duration = time() - start_time
-        logger.warning(f"Hook call to {url} failed: {e} (request_id={request_id})")
+        logger.warning("hook_call_failed", url=url, error=str(e), request_id=request_id)
         prom.record_hook_call(event_type, False, duration)
         return False
